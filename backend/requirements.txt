@@ -1,0 +1,40 @@
+# Binary Graph Analyzer - backend dependencies
+# Requires Python 3.11+ (verified on CPython 3.14 / Windows x64)
+
+fastapi==0.121.2
+uvicorn[standard]==0.40.0
+pydantic==2.13.0
+pydantic-settings==2.13.1
+python-multipart==0.0.20
+
+# Static analysis engine. angr pulls in cle, pyvex, claripy, archinfo, capstone,
+# pypcode and networkx as transitive dependencies.
+angr==9.3.2
+networkx==3.6.1
+
+# PE parsing for the import table. angr's CLE already vendors pefile, but we pin
+# it explicitly because import_extractor.py falls back to it directly.
+pefile==2024.8.26
+
+# Testing
+pytest==9.0.1
+httpx==0.28.1
+
+# Dynamic analysis (Phase 1, optional, Windows-only): connects to a dbgsrv
+# the user already has running in their own isolated VM - never executes
+# anything locally. See backend/app/dynamic/ and
+# docs/dynamic-analysis-vm-setup.md.
+#
+# comtypes is pure Python (installs on any Python version, unlike `pykd` -
+# see below) and backs ComtypesDebugBridge, the default bridge
+# (app/dynamic/debug_bridge/client.py). Its dbgeng-specific COM vtable slots
+# still need filling in from a real dbgeng.h before a connection actually
+# works - see that class's docstring and docs/dynamic-analysis-vm-setup.md §8.
+comtypes==1.4.16
+
+# `pykd` (the alternative binding) is intentionally NOT listed here: its
+# newest PyPI release (0.3.4.15) only ships wheels through Python 3.9
+# (cp27-cp39) - none exist for this project's Python 3.14, so
+# `pip install pykd` fails outright on this venv. `PykdDebugBridge`
+# (app/dynamic/debug_bridge/client.py) is kept only for reference/comparison
+# and cannot be constructed usefully here.

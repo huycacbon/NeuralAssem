@@ -1,0 +1,188 @@
+/*
+ * Theme tokens.
+ *
+ * Every colour is a variable and both themes are defined, because the graph
+ * canvas reads these same tokens at runtime (see graphStyle.ts) - hard-coding a
+ * node colour would make it unreadable in one of the two themes.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #f6f7f9;
+  --bg-panel: #ffffff;
+  --bg-elevated: #f0f2f5;
+  --bg-input: #ffffff;
+  --border: #d8dde5;
+  --border-strong: #b6bfcc;
+
+  --text: #1a1f29;
+  --text-muted: #5b6675;
+  --text-faint: #8a94a3;
+
+  --accent: #2f6fd0;
+  --accent-contrast: #ffffff;
+
+  /* Node roles. Shape carries the same information (see GraphLegend), so the
+     UI never depends on colour alone. */
+  --node-function: #4a7fd4;
+  --node-function-entry: #14a06a;
+  --node-api: #a05fc4;
+  --node-block: #5b7186;
+  --node-string: #c08a2e;
+  /* Debug session's current instruction highlight (see graphStyle.ts's
+     `.executing-node`) - deliberately distinct from every risk/node colour
+     above so it never blends in with static-analysis styling. */
+  --node-executing: #1fb6c9;
+
+  --risk-none: #8a94a3;
+  --risk-low: #3f8f5f;
+  --risk-medium: #c08a2e;
+  --risk-high: #cc4444;
+
+  --edge: #97a3b3;
+  --edge-true: #3f8f5f;
+  --edge-false: #cc4444;
+  --edge-call: #4a7fd4;
+
+  --warn-bg: #fff4e0;
+  --warn-border: #e0b060;
+  --warn-text: #6b4a10;
+  --error-bg: #fdeaea;
+  --error-border: #d88;
+  --error-text: #7d2020;
+
+  --radius: 6px;
+  --mono: ui-monospace, 'Cascadia Mono', 'Consolas', 'SF Mono', monospace;
+  --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --bg-panel: #1b1f26;
+    --bg-elevated: #232830;
+    --bg-input: #12151a;
+    --border: #2e343e;
+    --border-strong: #444c59;
+
+    --text: #e4e8ee;
+    --text-muted: #9aa4b2;
+    --text-faint: #6d7684;
+
+    --accent: #5b9bf0;
+    --accent-contrast: #0d1015;
+
+    --node-function: #6fa3e8;
+    --node-function-entry: #35c98c;
+    --node-api: #c288e0;
+    --node-block: #8296ac;
+    --node-string: #e0ac52;
+    --node-executing: #4fd8ea;
+
+    --risk-none: #6d7684;
+    --risk-low: #5cbb84;
+    --risk-medium: #e0ac52;
+    --risk-high: #f07070;
+
+    --edge: #5a6472;
+    --edge-true: #5cbb84;
+    --edge-false: #f07070;
+    --edge-call: #6fa3e8;
+
+    --warn-bg: #33291480;
+    --warn-border: #8a6a2a;
+    --warn-text: #e8c98a;
+    --error-bg: #3a1c1c80;
+    --error-border: #8a3a3a;
+    --error-text: #f0a0a0;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+button.toggled {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+input,
+select {
+  font: inherit;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+code,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

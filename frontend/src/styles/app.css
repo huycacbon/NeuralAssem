@@ -1,0 +1,980 @@
+/* Application shell: toolbar / three columns / status bar. */
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ---------- Toolbar ---------- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar-brand {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-group > label {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.segmented button {
+  border: none;
+  border-radius: 0;
+  border-right: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.segmented button:last-child {
+  border-right: none;
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+.search-input {
+  width: 230px;
+}
+
+/* ---------- Main columns ---------- */
+
+.main {
+  display: grid;
+  grid-template-columns: 290px 1fr 340px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.panel-left {
+  border-right: 1px solid var(--border);
+}
+
+/* The function list sits below the summary inside the left column, so it must
+   take the remaining height rather than establish its own column chrome. */
+.fn-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Summary block above the list: content-sized, capped at half the column, and
+   independently scrollable. `flex-shrink: 0` is required - otherwise the long
+   function list below squeezes it down to a sliver. */
+.left-summary {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 52%;
+  overflow-y: auto;
+}
+
+.panel-right {
+  border-left: 1px solid var(--border);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.panel-header .count {
+  color: var(--text-faint);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.panel-section {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-section h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+/* ---------- Function list ---------- */
+
+.fn-search {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.fn-search input {
+  width: 100%;
+}
+
+.fn-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 10px;
+}
+
+.fn-item:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+
+.fn-item[aria-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.fn-item-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.fn-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fn-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.risk-badge {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 9px;
+  border: 1px solid currentColor;
+}
+
+.risk-none {
+  color: var(--risk-none);
+}
+.risk-low {
+  color: var(--risk-low);
+}
+.risk-medium {
+  color: var(--risk-medium);
+}
+.risk-high {
+  color: var(--risk-high);
+}
+
+.entry-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--node-function-entry);
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+/* ---------- Assembly view (replaces the graph while debugging) ---------- */
+
+/* Mirrors .graph-wrap's sizing so it drops into the same `.graph-column`
+   flex slot as GraphViewer without the parent needing to know which of the
+   two is currently mounted. */
+.assembly-view-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.assembly-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.assembly-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px;
+}
+
+.assembly-view-empty {
+  margin: 24px 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Full listing fills the scroll container itself, not a fixed max-height
+   box like the details-panel preview (.disasm-full) - the whole point here
+   is maximum vertical room. */
+.assembly-listing {
+  max-height: none;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+/* Compound selector (not just `.assembly-row`) so this reliably beats
+   `.disasm-row`'s own `grid-template-columns` regardless of which of the two
+   rules ends up later in source order - both are single-class selectors of
+   equal specificity otherwise, and this class is always applied alongside
+   `disasm-row`, never alone. */
+.disasm-row.assembly-row {
+  grid-template-columns: 18px 92px 62px 1fr;
+  align-items: center;
+  border-radius: 3px;
+  padding: 1px 2px;
+}
+
+.assembly-row-current {
+  background: color-mix(in srgb, var(--node-executing) 18%, transparent);
+  outline: 1px solid var(--node-executing);
+}
+
+.assembly-bp-toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  width: 14px;
+  height: 14px;
+  line-height: 1;
+  font-size: 10px;
+  color: var(--border-strong);
+  cursor: pointer;
+}
+
+.assembly-bp-toggle:hover {
+  color: var(--risk-high);
+}
+
+.assembly-bp-set {
+  color: var(--risk-high);
+}
+
+/* ---------- Graph canvas ---------- */
+
+/* The centre grid cell. Holds the floating banners plus GraphViewer's own
+   .graph-wrap, which must stretch to fill it - the canvas inside is absolutely
+   positioned and would otherwise collapse the parent to zero height. */
+.graph-column {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.graph-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.graph-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.graph-banner {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.banner {
+  pointer-events: auto;
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  backdrop-filter: blur(4px);
+}
+
+.banner.error {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.graph-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  max-width: 300px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.22);
+}
+
+.graph-tooltip .mono {
+  color: var(--text-muted);
+}
+
+/* ---------- Node details ---------- */
+
+.detail-title {
+  font-size: 15px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 3px 8px;
+  font-size: 12.5px;
+}
+
+.kv dt {
+  color: var(--text-faint);
+}
+
+.kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+}
+
+.chip.api {
+  border-color: var(--node-api);
+  color: var(--node-api);
+}
+
+.reason-list,
+.plain-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12.5px;
+}
+
+.reason-list li,
+.plain-list li {
+  margin-bottom: 2px;
+}
+
+.string-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.string-list li {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.string-list .addr {
+  font-family: var(--mono);
+  color: var(--text-faint);
+}
+
+.string-list .val {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.disasm {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+}
+
+.disasm-row {
+  display: grid;
+  grid-template-columns: 92px 62px 1fr;
+  gap: 6px;
+  white-space: pre;
+}
+
+.disasm-row .a {
+  color: var(--text-faint);
+}
+.disasm-row .m {
+  color: var(--accent);
+}
+
+/* Whole-function disassembly preview in the function details panel: several
+   blocks stacked, so it gets more room than a single-block view. */
+.disasm-full {
+  max-height: 480px;
+}
+
+.disasm-block-header {
+  display: inline-block;
+  margin: 8px 0 3px;
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-radius: 3px;
+}
+
+.disasm-block-header:first-child {
+  margin-top: 0;
+}
+
+/* Disassembly / Pseudocode toggle above the code box. */
+.code-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.segmented.small button {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* Pseudocode is prose-like C, not the fixed-column disassembly grid - wrap
+   long lines instead of forcing horizontal scroll. */
+.pseudocode {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.address-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.address-links button {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.empty-hint {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.disclaimer {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  border-left: 3px solid var(--risk-medium);
+  padding: 4px 8px;
+  background: var(--bg-elevated);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* ---------- Status bar / legend ---------- */
+
+.statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+  color: var(--text-muted);
+  min-height: 34px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.legend-swatch {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  flex: 0 0 auto;
+}
+
+.legend-swatch.circle {
+  border-radius: 50%;
+}
+.legend-swatch.round-rect {
+  border-radius: 4px;
+}
+.legend-swatch.rect {
+  border-radius: 1px;
+}
+.legend-swatch.diamond {
+  transform: rotate(45deg) scale(0.82);
+}
+.legend-swatch.double {
+  box-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 4px currentColor;
+}
+.legend-swatch.thick {
+  border-width: 4px;
+}
+
+.legend-line {
+  width: 20px;
+  height: 0;
+  border-top: 2px solid currentColor;
+}
+
+/* ---------- Upload ---------- */
+
+.upload-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.upload-label input[type='file'] {
+  display: none;
+}
+
+.progress-track {
+  width: 130px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+.stage-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.stage-text.failed {
+  color: var(--risk-high);
+}
+.stage-text.completed {
+  color: var(--risk-low);
+}
+
+/* ---------- Summary ---------- */
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.summary-cell {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 8px;
+}
+
+.summary-cell .n {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 700;
+  display: block;
+  line-height: 1.2;
+}
+
+.summary-cell .k {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  padding: 2px 0;
+}
+
+.filter-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.filter-row select,
+.filter-row input[type='number'] {
+  width: 110px;
+}
+
+@media (max-width: 1200px) {
+  .main {
+    grid-template-columns: 240px 1fr 290px;
+  }
+  .search-input {
+    width: 160px;
+  }
+}
+
+/* ---------- Debug ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 0.45);
+  padding: 24px;
+}
+
+.modal {
+  width: min(480px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.3);
+}
+
+.modal-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 14.5px;
+}
+
+.modal-body {
+  padding: 14px 16px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.modal-body ul {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
+.modal-body li {
+  margin-bottom: 4px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+
+.field span {
+  color: var(--text-muted);
+}
+
+.field input {
+  width: 100%;
+}
+
+.risk-callout {
+  margin: 10px 0;
+  padding: 6px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+}
+
+.risk-callout.risk-high {
+  border-color: var(--risk-high);
+  color: var(--risk-high);
+}
+
+.risk-callout.risk-medium {
+  border-color: var(--risk-medium);
+  color: var(--risk-medium);
+}
+
+.error-text {
+  border-left-color: var(--risk-high);
+  color: var(--error-text);
+  background: var(--error-bg);
+}
+
+.debug-panel {
+  background: var(--bg-elevated);
+}
+
+.debug-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.debug-status-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+
+.debug-status-badge.debug-status-break {
+  border-color: var(--node-executing);
+  color: var(--node-executing);
+}
+
+.debug-status-badge.debug-status-running {
+  border-color: var(--risk-low);
+  color: var(--risk-low);
+}
+
+.debug-status-badge.debug-status-error {
+  border-color: var(--risk-high);
+  color: var(--risk-high);
+}
+
+.memory-dump-listing {
+  max-height: 320px;
+}
+
+.memory-dump-row {
+  display: grid;
+  grid-template-columns: 92px 1fr auto;
+  gap: 10px;
+  white-space: pre;
+}
+
+.memory-dump-hex {
+  letter-spacing: 0.03em;
+}
+
+.memory-dump-ascii {
+  color: var(--text-muted);
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+}
+
+.flags-row {
+  flex-wrap: wrap;
+}
+
+.flag-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.flag-toggle input[type='checkbox'] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.flag-toggle:has(input:checked) {
+  border-color: var(--node-executing);
+  color: var(--node-executing);
+}
+
+.register-row .register-value {
+  font-family: var(--mono);
+  color: var(--accent);
+  text-align: left;
+  padding: 0;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.register-edit-input {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  background: var(--bg-input);
+  color: inherit;
+  padding: 0 3px;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--accent);
+  font-family: var(--mono);
+  text-decoration: underline;
+}
+
+.breakpoint-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-color: var(--node-executing);
+  color: var(--node-executing);
+}
+
+.chip-remove {
+  border: none;
+  background: none;
+  padding: 0 0 0 2px;
+  font-size: 13px;
+  line-height: 1;
+  color: inherit;
+}

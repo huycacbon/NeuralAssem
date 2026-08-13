@@ -1,0 +1,35 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+python_embed/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# --- Desktop build output ---
+desktop/build/
+desktop/dist/
+desktop/.cache/
+dist_desktop/
+
+# --- Local tool state (not project source) ---
+.claude/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Local/runtime ---
+*.log
+.env
+.env.local

@@ -1,0 +1,31 @@
+# Dependencies for the packaged desktop build's embedded Python.
+#
+# No fastapi/uvicorn/python-multipart here: desktop_launcher.py never imports
+# app.main (the FastAPI app) - it talks to app.desktop_bridge.DesktopApi
+# directly as pywebview's js_api, so nothing in the desktop build ever starts
+# an HTTP server or handles a multipart request. Those three packages are
+# still in backend/requirements.txt for the web deployment, which does run
+# FastAPI/uvicorn.
+
+pydantic==2.13.0
+pydantic-settings==2.13.1
+
+angr==9.3.2
+networkx==3.6.1
+pefile==2024.8.26
+
+pywebview==6.2.1
+
+# Dynamic analysis (Phase 1, optional, Windows-only): comtypes is pure Python
+# (installs on any Python version) and backs ComtypesDebugBridge, the
+# default bridge (app/dynamic/debug_bridge/client.py) - unlike `pykd`, whose
+# newest PyPI release (0.3.4.15) only has wheels through Python 3.9, none for
+# this Python 3.14 embeddable build (confirmed: an earlier `pykd==...` pin
+# here broke build_desktop_app.ps1's install step outright). Its dbgeng
+# vtable slots and engine-options setup were live-tested and fixed on
+# 2026-08-08 (local launch attach + module enumeration confirmed working
+# against a real target) - see that class's docstring and
+# docs/dynamic-analysis-vm-setup.md §8/§9 for exactly what is and isn't
+# verified yet (breakpoint/step/register reads on a live target, and the
+# whole remote/dbgsrv path, are not re-tested since that fix).
+comtypes==1.4.16

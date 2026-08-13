@@ -1,0 +1,600 @@
+# Binary Graph Analyzer
+
+[🇻🇳 Tiếng Việt (primary document)](README.md) · 🇬🇧 English · [Security policy](SECURITY.md)
+
+A **static analysis** tool for PE files (`.exe` / `.dll`) that runs entirely locally, rendering
+disassembly results as an interactive, neural-network-style graph.
+
+> **Safety:** this tool **never executes** the sample. Binaries are only ever read as data and
+> disassembled by angr. No sandbox, no emulator, no file/hash sent to the Internet. The backend
+> (`backend/app/`) never uses `subprocess` — a unit test enforces this as a regression guard. The
+> desktop build ([section 13](#13-desktop-build-no-install-required)) is the one exception: it uses
+> `subprocess` in exactly one place, in a launcher *outside* `backend/app/`, and only to start its
+> own bundled Python — it never touches the sample file.
+
+---
+
+## 1. Project description
+
+Upload a PE file; the backend uses [angr](https://angr.io)'s `CFGFast` to recover control flow,
+then normalizes every result into a single graph schema. The frontend renders it with Cytoscape.js
+in three views:
+
+| View | Content |
+|---|---|
+| **Call Graph** | Function → Function, plus API nodes for called imports |
+| **Function CFG** | Basic blocks of one function, with per-block disassembly |
+| **API Graph** | Function → Imported API (bipartite, one node per API) |
+
+Besides the graph, the tool extracts: entry point, function list, imported APIs (with DLL),
+strings, and a **heuristic risk score** to help prioritise analysis.
+
+> The risk score is a heuristic to prioritise analysis, **not a malware detection verdict**.
+
+---
+
+## 2. Architecture
+
+```mermaid
+flowchart TD
+    A["Frontend React + TypeScript<br/>Cytoscape.js"] -->|"REST / multipart"| B["FastAPI backend<br/>127.0.0.1:8000"]
+    B --> C["file_service<br/>validate • UUID temp • SHA-256"]
+    C --> D["angr Project<br/>auto_load_libs=False"]
+    D --> E["CFGFast<br/>normalize=True, data_references=True"]
+    E --> F["Extraction<br/>functions • blocks • imports • strings"]
+    F --> G["risk_scorer<br/>heuristic triage"]
+    G --> H["Graph normalization<br/>nodes • edges • metadata"]
+    H -->|"JSON"| A
+    C -.->|"finally: temp file removed"| X["(temp file removed)"]
+```
+
+UI data flow:
+
+```mermaid
+flowchart LR
+    U["Upload .exe/.dll"] --> S["Analysis summary"]
+    S --> CG["Call Graph"]
+    CG -->|"click node"| ND["Node details"]
+    CG -->|"double-click function"| CFG["Function CFG"]
+    CFG -->|"click basic block"| DIS["Disassembly"]
+    S --> AG["API Graph"]
+    AG -->|"click API node"| API["API details + callers"]
+```
+
+Layout:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ Upload | Graph type | Layout | Search | Fit/Reset/Labels     │
+├──────────────┬──────────────────────────────┬───────────────┤
+│ Summary      │                              │ Node details  │
+│ + Filters    │        Graph canvas          │               │
+│ + Functions  │        (Cytoscape.js)        │               │
+├──────────────┴──────────────────────────────┴───────────────┤
+│ Legend and analysis status                                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Directory structure
+
+```text
+binary-graph-analyzer/
+├── backend/
+│   ├── app/
+│   │   ├── main.py                    FastAPI app + error envelope
+│   │   ├── config.py                  Settings (env prefix BGA_)
+│   │   ├── dependencies.py            DI wiring
+│   │   ├── api/
+│   │   │   ├── analysis.py            Analysis endpoints
+│   │   │   └── health.py              Health check
+│   │   ├── analyzers/
+│   │   │   ├── angr_analyzer.py       angr driver → dataclasses
+│   │   │   ├── call_graph_builder.py  Call graph + API graph
+│   │   │   ├── cfg_builder.py         One function's CFG
+│   │   │   ├── import_extractor.py    Import table (pefile → CLE)
+│   │   │   ├── string_extractor.py    Whole-file + per-function strings
+│   │   │   └── risk_scorer.py         Heuristic triage
+│   │   ├── models/
+│   │   │   ├── graph.py               Normalised graph schema
+│   │   │   └── analysis.py            Response models
+│   │   ├── repositories/              Interface + in-memory store
+│   │   ├── services/
+│   │   │   ├── analysis_service.py    Orchestration
+│   │   │   └── file_service.py        Upload + cleanup
+│   │   └── utils/
+│   │       ├── address.py             Address normalisation, node ids
+│   │       └── security.py            Validation, hashing, temp files
+│   ├── tests/                         287 tests
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── components/                UI components
+│   │   ├── services/analysisApi.ts    REST client
+│   │   ├── types/graph.ts             Wire types
+│   │   ├── hooks/useGraphFilters.ts   Filter state + predicate
+│   │   ├── styles/                    CSS variables (light/dark)
+│   │   ├── App.tsx
+│   │   └── main.tsx
+│   └── package.json
+├── desktop/                            Standalone desktop packaging (section 13)
+│   ├── launcher_stub.py               Native launcher (PyInstaller-packaged)
+│   ├── requirements.txt               Dependencies for the embeddable Python
+│   └── README.md
+├── scripts/
+│   ├── run_backend.bat
+│   ├── run_frontend.bat
+│   ├── run_all.ps1
+│   └── build_desktop_app.ps1          Build the desktop app (section 13)
+└── README.md
+```
+
+---
+
+## 3. Environment requirements
+
+| Component | Required | Verified on |
+|---|---|---|
+| Python | 3.11+ | CPython **3.14.4** (Windows x64) |
+| Node.js | 18+ | **24.18.0** |
+| npm | 9+ | **11.16.0** |
+| OS | Windows / Linux / macOS | Windows 11 Pro |
+
+angr `9.3.2` installs fine on Python 3.14 x64. Some dependencies (`mulpyplexer`) only ship a
+pure-Python sdist, so **do not** use `pip install --only-binary=:all:` — it will fail.
+
+On startup, angr may print `failed loading "unicornlib.dll", unicorn support disabled`. This
+warning is **harmless**: unicorn is only needed for emulation, which this tool never performs.
+
+---
+
+## 4. Backend setup
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+## 5. Frontend setup
+
+```bash
+cd frontend
+npm install
+copy .env.example .env
+```
+
+`.env` only holds the backend URL:
+
+```text
+VITE_API_BASE_URL=http://127.0.0.1:8000
+```
+
+---
+
+## 6. Running it
+
+### Run both (recommended, Windows)
+
+```bash
+powershell -ExecutionPolicy Bypass -File scripts\run_all.ps1
+```
+
+The script creates a venv, installs dependencies, starts both servers, and opens the browser.
+Use `-SkipInstall` to skip the install step once dependencies are already there.
+
+### Run separately
+
+Backend:
+
+```bash
+cd backend
+.venv\Scripts\activate
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
+
+---
+
+## 7. Usage
+
+1. Click **Upload .exe / .dll** and pick a benign PE file.
+2. Wait for analysis (a few seconds to tens of seconds depending on size). The status bar shows
+   progress.
+3. The **Call Graph** appears. Interactions:
+
+| Action | Result |
+|---|---|
+| Click a node | Show details in the right panel, highlight direct neighbours |
+| **Double-click** a function node | Open that function's **CFG** |
+| Right-click a node | Hide the node |
+| **Shift** + right-click a node | Expand one more hop |
+| Drag / scroll | Pan / zoom |
+| Hover | Summary tooltip |
+
+4. Left panel: search functions, view the summary, and adjust filters. Click a function to focus
+   its node; **double-click** to open its CFG.
+5. Right panel: details for the function / basic block / API of whichever node is selected. For
+   functions, there is a **Disassembly | Pseudocode** toggle — pseudocode is C-like code generated
+   by `angr.analyses.Decompiler` (heuristic, not guaranteed 100% correct), pre-computed only for a
+   priority subset of functions (entry point, named functions, high risk score) since decompiling
+   is far more expensive than disassembly — see "Current limitations". For the rest, click
+   **"Decompile this function"** to generate pseudocode on demand (best-effort, reusing the angr
+   analysis already held in memory — no need to re-analyse from scratch).
+6. **Layout**: *Neural Network* (force-directed, default for the call graph) or *Hierarchical Flow*
+   (default for the CFG).
+7. **Export Markdown**: a toolbar button that downloads a compact `.md` report — file summary, a
+   function table sorted by risk score, imports grouped by capability, the call graph as an
+   edge-list, and pseudocode/risk reasons for notable functions. Designed to be pasted straight
+   into an AI chat or sent to a colleague without this tool installed; it is not a raw data dump —
+   see section 8.
+
+### Filters
+
+Filters **never delete the underlying data** — they only change what is currently displayed:
+
+- Minimum risk score
+- Depth from the entry point (server-side, 1–5 hops) and a client-side hop cap
+- Max node count (100 / 250 / 500 / 1000 / 2000)
+- Hide imported APIs
+- Hide unnamed functions (`sub_xxxx`)
+- Only functions with strings
+- Only functions calling a specific API
+- Search by function name / API name / address / module
+
+---
+
+## 8. API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Health check + angr status |
+| `POST` | `/api/analysis` | Upload (`multipart/form-data`, field `file`) and analyse |
+| `GET` | `/api/analysis/{id}` | Fetch a stored analysis result |
+| `GET` | `/api/analysis/{id}/functions` | Function list — `search`, `limit`, `offset`, `minRiskScore` |
+| `GET` | `/api/analysis/{id}/functions/{addr}` | One function's details |
+| `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | Function CFG (lazy, with instructions) |
+| `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | On-demand decompile (angr), no-op if already done |
+| `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
+| `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |
+| `GET` | `/api/analysis/{id}/imports` | Imported APIs with DLL and callers |
+| `GET` | `/api/analysis/{id}/strings` | Strings — `limit`, `search` |
+| `GET` | `/api/analysis/{id}/expand/{addr}` | One-hop neighbourhood of a function |
+| `GET` | `/api/analysis/{id}/export.md` | Compact Markdown report (see section 7, step 7) |
+| `DELETE` | `/api/analysis/{id}` | Delete a result from memory |
+
+Addresses in URLs accept both `0x401000` and `401000`.
+
+### Markdown export format
+
+`/export.md` returns `text/markdown` (with `Content-Disposition: attachment`) — purpose-built for
+pasting into an AI chat or sending to someone without this tool, **not** a full JSON dump:
+
+- A risk-score table instead of nested JSON arrays — one row per function with risk > 0, plus the
+  reasons.
+- Imports grouped by DLL **and** by capability (`process_injection`, `anti_analysis`, ...).
+- The call graph as a compact edge-list (`caller -> callee [CALL]`) instead of full node/edge
+  objects.
+- Pseudocode/risk reasons shown in full only for: the entry point, functions with risk > 0, and
+  functions that already have pseudocode — everything else is a single table row, not a dump of
+  all 600+ functions in the binary.
+- The document itself is **in English** even though the rest of the app is in Vietnamese — English
+  tokenises more compactly for most AI models, which is this format's whole point.
+- Hard caps everywhere (risk-table rows, edges, functions with pseudocode) — anything truncated is
+  always reported with a count, never silently dropped.
+
+### Graph schema
+
+Every graph endpoint returns the same shape:
+
+```json
+{
+  "nodes": [
+    {
+      "id": "func_401000",
+      "label": "main",
+      "kind": "function",
+      "address": "0x401000",
+      "metadata": {
+        "size": 256, "blockCount": 8, "callerCount": 2, "calleeCount": 5,
+        "riskScore": 12, "riskLevel": "medium",
+        "isImported": false, "isEntryPoint": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_1",
+      "source": "func_401000",
+      "target": "api_kernel32!CreateFileW",
+      "kind": "CALL",
+      "metadata": { "callSite": "0x401050", "callCount": 1 }
+    }
+  ],
+  "metadata": { "graphType": "call_graph", "depth": 2, "truncated": false }
+}
+```
+
+Node kinds: `function`, `basic_block`, `api`, `string`, `module`, `behavior`.
+Edge kinds: `CALL`, `JUMP`, `TRUE`, `FALSE`, `FALLTHROUGH`, `RETURN`, `REFERENCE`, `READ`, `WRITE`, `DATA_FLOW`.
+
+### Errors
+
+Every error returns the same envelope. In production mode (`BGA_ENVIRONMENT=production`), the
+`details` field is stripped so internals are never leaked:
+
+```json
+{ "error": { "code": "ANALYSIS_FAILED", "message": "Could not analyse the binary", "details": null } }
+```
+
+Error codes: `INVALID_EXTENSION`, `EMPTY_FILE`, `FILE_TOO_LARGE`, `NOT_A_PE`, `LOAD_FAILED`,
+`CFG_FAILED`, `NO_FUNCTIONS`, `ANALYSIS_TIMEOUT`, `ANALYSIS_NOT_FOUND`, `FUNCTION_NOT_FOUND`,
+`VALIDATION_ERROR`, `INTERNAL_ERROR`.
+
+### Configuration
+
+Every setting can be overridden via `BGA_`-prefixed environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BGA_HOST` | `127.0.0.1` | Bind address |
+| `BGA_PORT` | `8000` | Port |
+| `BGA_ENVIRONMENT` | `development` | `production` hides `details` in errors |
+| `BGA_MAX_UPLOAD_MB` | `100` | Upload size cap |
+| `BGA_ANALYSIS_TIMEOUT_SECONDS` | `300` | Per-analysis timeout |
+| `BGA_MAX_STORED_ANALYSES` | `16` | Results kept in RAM (LRU) |
+| `BGA_CORS_ORIGINS` | localhost:5173/4173 | Allowed origins |
+
+---
+
+## 9. Current limitations
+
+- **No database yet.** Results live in RAM, capped at 16 analyses (LRU), lost on backend restart.
+  The `AnalysisRepository` interface is already split out to swap in SQLite later.
+- **The call graph only shows what is reachable from the entry point.** At the maximum depth of 5,
+  functions `CFGFast` cannot connect to the entry point (fairly common) do not appear on the
+  graph — but they **are still listed in full in the Functions panel**, clickable for full detail.
+  The UI shows a banner with the count of omitted functions.
+- **A timeout does not actually cancel angr.** angr has no cancellation support; when a request
+  times out it returns `ANALYSIS_TIMEOUT`, but the background thread keeps running to completion.
+- **All disassembly is extracted at analysis time** (so the temp file can be deleted immediately),
+  capped at 4000 functions, 512 blocks/function, 256 instructions/block. The first response still
+  carries no instructions — a CFG is only returned when a function is opened.
+- **Automatic pseudocode is capped at 60 functions per analysis, but more can be generated on
+  demand.** Decompiling (`angr.analyses.Decompiler`) is far more expensive than disassembly — a
+  ~330-block function measured ~19s versus ~0.1s to just disassemble. Right after analysis
+  finishes, the tool auto-decompiles up to 60 priority functions (entry point → named functions →
+  high risk score → fewer blocks first), stopping early past a 45s budget. Functions outside that
+  set show a **"Decompile this function"** button to trigger decompilation on demand, reusing the
+  `angr.Project` kept alive in memory for each cached analysis (verified: decompiling still works
+  on Windows after the original temp file has been deleted). Pseudocode is always angr's heuristic
+  output, not guaranteed to match the original source exactly.
+- **A Ghidra decompiler integration (higher quality than angr's) was attempted but did not work on
+  the current dev machine** — `pyghidra` 3.1.0 (bundled with Ghidra 12.1.2 PUBLIC) hits an infinite
+  recursion bug on JVM startup (reproduced on both Python 3.12 and 3.14, so not a Python-version
+  issue), and Ghidra 12.x dropped Jython, leaving PyGhidra as the only way to run a `.py` script at
+  all. It may work on a different machine or Ghidra build; check the development history for
+  exactly what was tried if you want to retry it.
+- **No data-flow yet.** The schema already supports `DATA_FLOW` / `READ` / `WRITE`, but no analyzer
+  produces them.
+- **Packed binaries** yield poor results. The tool detects packing heuristically and shows a
+  warning, but does not unpack.
+- **String-to-function mapping** depends on angr's `data_references`; many functions will show no
+  strings even when the binary clearly has them.
+- PE only. ELF/Mach-O are rejected at the validation step.
+
+---
+
+## 10. Safety notes
+
+These constraints are enforced in code, not just convention:
+
+1. **Never executes the binary.** No `subprocess`, `os.system`, `os.spawn`, Wine, sandbox, or
+   emulator. A unit test (`test_sample_is_never_executed`) scans all of `app/` to catch
+   regressions.
+   **Deliberate exception:** the Debug feature's "Run directly on this machine" mode
+   (`app/dynamic/`, see section 15) **does** execute the specified file directly on the machine
+   running the app — this is behaviour the user explicitly requested and confirmed the risk of
+   (see `docs/dynamic-analysis-spec.md`'s "local-launch" addendum), completely separate from the
+   static analyzer (sections 1–14 still hold the "never executes" invariant absolutely, unaffected
+   by this). Do not use this mode on an unidentified/suspicious sample — the remote + isolated-VM
+   mode (section 15) is the right choice for that.
+2. **Only reads files as data.** angr loads with `auto_load_libs=False` and only disassembles.
+3. **Sends nothing externally.** No VirusTotal, no telemetry, no hash lookups.
+4. **Blocks path traversal.** The user's filename is never used to build a path — the temp file is
+   always `<tempdir>/<uuid>.exe`. The original name is only sanitised for display.
+5. **Enforces the size cap while streaming**, not after reading everything into memory first.
+6. **Deletes the temp file in a `finally`** — on success, on error, and on cancellation alike.
+7. **Binds to loopback by default** (`127.0.0.1`); CORS only allows the local frontend.
+8. **Never logs binary contents.** Logs only carry the display name, size, and the first 16
+   characters of the SHA-256.
+9. **Never shows raw bytes** on the frontend — only already-disassembled mnemonics/operands.
+10. **Never auto-analyses anything** on startup.
+
+**Still analyse real samples inside an isolated VM.** This tool never executes the sample, but its
+parsing libraries (angr, pefile) can still have vulnerabilities when handed a file deliberately
+crafted to attack the parser itself.
+
+---
+
+## 11. Tests
+
+```bash
+cd backend
+.venv\Scripts\activate
+pytest tests -v
+```
+
+287 tests, covering: extension/size validation, SHA-256, address normalisation, path-traversal
+protection, risk scoring, call-graph-to-JSON conversion, duplicate-edge removal, depth limiting,
+max-node limiting, decompile-priority ordering, the error envelope, the dynamic analysis module
+(section 15, tested via `FakeDebugBridge`), and one integration test that runs angr for real.
+
+A benign C test fixture lives at
+[`backend/tests/fixtures/sample.c`](backend/tests/fixtures/sample.c). Compile it with MinGW-w64 or
+Visual Studio:
+
+```bash
+gcc -O0 -o backend/tests/fixtures/sample.exe backend/tests/fixtures/sample.c
+```
+
+```bash
+cl /Od /Fe:sample.exe sample.c
+```
+
+If it cannot be compiled, the integration test falls back to a benign system binary
+(`C:\Windows\System32\where.exe`) in read-only mode, or skips itself on other platforms. Point it
+at a different file with `BGA_TEST_PE`:
+
+```bash
+set BGA_TEST_PE=C:\path\to\sample.exe
+pytest tests/test_integration_angr.py -v
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm run build
+```
+
+---
+
+## 13. Desktop build (no install required)
+
+Besides running as a web app (backend + browser), the project also packages into **a standalone
+Windows program**: copy one folder to another machine, double-click the `.exe`, and it just
+runs — no Python, Node.js, pip, or npm needed on the target machine, and no internet needed at
+runtime.
+
+```powershell
+cd scripts
+powershell -ExecutionPolicy Bypass -File build_desktop_app.ps1
+```
+
+The output lands in `dist_desktop\BinaryGraphAnalyzer\` (~600 MB, mostly angr's precompiled
+dependencies — z3-solver, capstone, pyvex). Copy the whole folder to another Windows 10/11 x64
+machine and run `BinaryGraphAnalyzer.exe` — it opens a native window (WebView2, present on any
+modern Windows) showing the same UI as the web app.
+
+> **No HTTP backend anymore.** An earlier version ran an internal FastAPI/uvicorn server on a
+> random loopback port, with the frontend calling it via `fetch()`. The current version drops that
+> layer entirely: every analysis operation (upload, call graph, CFG, decompile, export) goes
+> through pywebview's `js_api` bridge (`window.pywebview.api.*`) — a same-process Python function
+> call, no socket, no port opened for the API at all. The only server left is the small static file
+> server built into pywebview (`http_server=True`), used only to serve the already-built frontend
+> files (required because Chromium blocks `<script type="module">` — what Vite outputs — from
+> running directly over `file://`); it has no `/api/*` routes and never touches the sample file.
+> See the diagram in [`desktop/README.md`](desktop/README.md#architecture) for the full call flow.
+
+**Architecture:** `BinaryGraphAnalyzer.exe` (a PyInstaller-packaged ~30-line launcher, which does
+**not** bundle angr) starts an "embeddable" Python distribution carrying all dependencies
+(`python_embed/`, installed via a normal `pip install`, not frozen) to run
+`desktop_launcher.py` — which opens a pywebview window with `js_api=DesktopApi()`
+(`backend/app/desktop_bridge.py`), calling straight into the same `AnalysisService` the web build
+uses. Why angr is not bundled directly with PyInstaller: angr's plugin/SimProcedure system does a
+lot of dynamic, introspection-style importing that PyInstaller cannot statically discover — the
+classic "works from source, breaks when frozen" failure mode of angr-based tools. Verified
+concretely during development: capstone and claripy/z3 (the two heaviest compiled dependencies)
+run correctly from the embeddable build, and a full `CFGFast` analysis on a real PE runs
+successfully end to end through the packaged bundle.
+
+Full details (architecture, two embeddable-Python-specific bugs hit during the build, current
+limitations): see [`desktop/README.md`](desktop/README.md).
+
+---
+
+## 14. Roadmap
+
+1. **SQLite persistence** — replace `InMemoryAnalysisRepository`, keep results across restarts.
+2. **Asynchronous analysis** — return `analysisId` immediately, push real progress via
+   SSE/WebSocket instead of the frontend guessing the stage.
+3. **Run angr in a separate process** so a timeout can actually cancel the work.
+4. **Data-flow edges** — the schema already has `DATA_FLOW`/`READ`/`WRITE`; needs an analyzer
+   (angr `VSA`/`DDG`).
+5. **Behaviour clustering** — group functions by capability into `behavior` nodes.
+6. **Diff two binaries** — diff call graphs to triage variants.
+7. **Improve the call graph** — use `CFGEmulated` or an indirect-jump resolver to connect currently
+   orphaned functions.
+8. **Export** — save the graph as GraphML/DOT/PNG.
+9. **Specific packer identification** (UPX, Themida, VMProtect) instead of the current generic
+   heuristic.
+10. **Virtualisation for very large graphs** — node count is already capped; level-of-detail
+    rendering could go further.
+
+---
+
+## 15. Debug (dynamic analysis) — two modes: remote (isolated VM) or run directly
+
+Beyond static analysis (sections 1–14, where the sample is **never executed**), there is a
+completely separate module: the **Debug** button on the toolbar opens a **real** debug session
+(breakpoints, stepping, live register/stack reads), in one of two modes the user picks each time:
+
+- **Remote** (recommended for unidentified/suspicious samples): the app only connects to a
+  `dbgsrv.exe` already running elsewhere — typically an **isolated VM the user prepares
+  themselves**, but it can be any `host:port` (including `127.0.0.1` if you run `dbgsrv` on this
+  same machine yourself). The app never automates the VM (no start/stop/snapshot, no copying the
+  sample in) — the user prepares it, runs `dbgsrv` themselves, then just types `host:port` into the
+  app.
+- **Run directly on this machine**: the app **executes the specified file itself**, directly on the
+  machine running the app — no VM, no isolation. By default it runs **the exact file you just
+  uploaded** (one click — the app re-sends and keeps its own separate copy, since the original was
+  already deleted right after static analysis finished); a path to a different file can also be
+  typed in manually. **Only use this for software you fully trust** (e.g. this app itself during
+  development), **never for an unidentified sample**. This is an explicit, documented exception to
+  the "never executes the binary" rule in section 10 — see the note there and the "local-launch"
+  addendum in `docs/dynamic-analysis-spec.md` for the full rationale and limits.
+
+Architecture: `backend/app/dynamic/` talks straight to `dbgeng.dll` via `comtypes`/`ctypes` (not
+`pykd` — its newest PyPI release does not support this project's Python version, see
+`docs/dynamic-analysis-vm-setup.md`). When the debugger stops at a runtime address, the app
+recomputes the corresponding static address (compensating for ASLR/rebase) and highlights the
+matching node on the already-rendered static graph — for both modes.
+
+See the full VM + `dbgsrv` setup guide at
+[`docs/dynamic-analysis-vm-setup.md`](docs/dynamic-analysis-vm-setup.md), and the complete spec/
+safety constraints at [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
+
+**Current capabilities:**
+
+- **Assembly View**: while a debug session is active, the main panel switches from the graph to a
+  linear assembly listing of the currently-running function, auto-highlighting and auto-scrolling
+  to the executing line on every step. If the PC is in a system module (outside the static
+  analyzer's coverage, e.g. `ntdll`/`kernel32`), it disassembles live from the running process
+  instead of using static data.
+- **Registers & flags**: read and **edit** register values (x86 and x64) and individual EFLAGS bits
+  (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — after editing, the next Step Into/Step Over uses the edited value
+  immediately. This is the first piece of phase 2 (patch-and-continue).
+- **Memory dump**: view raw bytes at any runtime address (classic address/hex/ASCII layout), not
+  limited to the analysed module.
+- **Display address rebasing**: while a debug session is active, every address shown in the UI
+  (Function List, graphs, CFG, Assembly View) is automatically offset to match the real runtime
+  address (ASLR-compensated) — the underlying data used for API calls/breakpoints still uses the
+  static coordinate space unchanged.
+
+**Not yet available / still limited:** writing arbitrary memory (`write_memory`), setting a
+breakpoint at an address outside the analysed module (dump/disassemble works there, breakpoints do
+not yet), attaching by `processName`. Most of the capabilities above (aside from the original
+attach + initial module enumeration) **have not been live-tested against a real target** — see the
+detailed notes in each section's docstring in
+`backend/app/dynamic/debug_bridge/client.py`.
+
+Section 10's safety notes above apply unchanged to the static analyzer and to remote mode; the
+"run directly" mode is the explicit, documented exception noted there. A mandatory warning modal
+shows before any debug session opens (shared, once per page session) — and a **separate warning
+that shows every time**, more severe, before selecting "run directly" mode.
+
+---
+
+## Language
+
+This is the English translation. Primary document (Vietnamese): [`README.md`](README.md).
+Security policy: [`SECURITY.md`](SECURITY.md).

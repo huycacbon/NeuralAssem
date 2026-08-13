@@ -1,5 +1,7 @@
 # Binary Graph Analyzer
 
+🇻🇳 Tiếng Việt (tài liệu chính) · [🇬🇧 English](README.en.md) · [Security policy](SECURITY.md)
+
 Công cụ **phân tích tĩnh** file PE (`.exe` / `.dll`) chạy hoàn toàn local, hiển thị kết quả
 disassembly dưới dạng đồ thị tương tác giống mạng nơ-ron.
 
@@ -423,9 +425,10 @@ cd backend
 pytest tests -v
 ```
 
-201 test, gồm: validate extension/size, SHA-256, chuẩn hóa address, chống path traversal,
+287 test, gồm: validate extension/size, SHA-256, chuẩn hóa address, chống path traversal,
 risk scoring, chuyển call graph sang JSON, loại bỏ edge trùng, giới hạn depth, giới hạn max nodes,
-thứ tự ưu tiên chọn function để decompile, error envelope, và một integration test chạy angr thật.
+thứ tự ưu tiên chọn function để decompile, error envelope, module dynamic analysis (mục 15,
+test qua `FakeDebugBridge`), và một integration test chạy angr thật.
 
 Test fixture C lành tính nằm ở [`backend/tests/fixtures/sample.c`](backend/tests/fixtures/sample.c).
 Compile bằng MinGW-w64 hoặc Visual Studio:
@@ -543,9 +546,35 @@ Xem hướng dẫn chuẩn bị VM + `dbgsrv` đầy đủ tại
 [`docs/dynamic-analysis-vm-setup.md`](docs/dynamic-analysis-vm-setup.md), và toàn bộ spec/ràng
 buộc an toàn tại [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
 
-Giai đoạn 1 (hiện tại): **chỉ đọc** — connect/launch, attach, breakpoint, step, đọc
-register/stack/memory. Chưa hỗ trợ ghi/patch register hay memory (giai đoạn 2, chưa triển khai).
+**Tính năng hiện có:**
+
+- **Assembly View**: khi debug session active, panel chính chuyển từ đồ thị sang danh sách
+  assembly của function đang chạy, tự highlight và cuộn tới dòng đang thực thi mỗi lần step.
+  Nếu PC đang ở module hệ thống (ngoài phạm vi static analyzer, vd. `ntdll`/`kernel32`) thì
+  disassemble trực tiếp từ tiến trình sống thay vì dùng dữ liệu tĩnh.
+- **Register & flags**: đọc và **sửa** giá trị register (x86 và x64) cùng từng bit EFLAGS
+  (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — sửa xong, Step Into/Step Over kế tiếp dùng ngay giá trị đã sửa.
+  Đây là bước đầu của giai đoạn 2 (patch-and-continue).
+- **Memory dump**: xem raw byte tại bất kỳ địa chỉ runtime nào (dạng address/hex/ASCII cổ điển),
+  không giới hạn trong module đang phân tích.
+- **Rebase địa chỉ hiển thị**: khi có debug session, mọi địa chỉ hiển thị trên UI (Function List,
+  đồ thị, CFG, Assembly View) tự động cộng bù ASLR để khớp với địa chỉ runtime thật — dữ liệu gốc
+  dùng cho API/breakpoint vẫn giữ nguyên tọa độ tĩnh.
+
+**Chưa có / còn hạn chế:** ghi memory tùy ý (`write_memory`), đặt breakpoint tại địa chỉ ngoài
+module đang phân tích (chỉ dump/disassemble được, chưa breakpoint được ở đó), attach theo
+`processName`. Phần lớn các khả năng trên (ngoại trừ attach + liệt kê module ban đầu) **chưa được
+live-test trên target thật** — xem ghi chú chi tiết trong docstring từng phần ở
+`backend/app/dynamic/debug_bridge/client.py`.
+
 Mục 10 "Lưu ý an toàn" ở trên áp dụng nguyên vẹn cho phần phân tích tĩnh và cho chế độ remote; chế
 độ "chạy trực tiếp" là ngoại lệ tường minh đã ghi rõ ở đó. Modal cảnh báo bắt buộc hiện trước khi mở
 phiên debug (chung, một lần mỗi phiên trang) — và một cảnh báo **riêng, hiện lại mỗi lần**, nghiêm
 trọng hơn, trước khi chọn chế độ "chạy trực tiếp".
+
+---
+
+## Ngôn ngữ / Language
+
+Tài liệu này bằng tiếng Việt. Bản tiếng Anh: [`README.en.md`](README.en.md).
+Chính sách bảo mật: [`SECURITY.md`](SECURITY.md).

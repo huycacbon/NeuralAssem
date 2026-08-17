@@ -472,8 +472,16 @@ powershell -ExecutionPolicy Bypass -File build_desktop_app.ps1
 
 Kết quả nằm ở `dist_desktop\BinaryGraphAnalyzer\` (~600 MB, chủ yếu do dependency biên dịch sẵn
 của angr — z3-solver, capstone, pyvex). Copy cả thư mục này sang máy Windows 10/11 x64 khác và
-chạy `BinaryGraphAnalyzer.exe` — mở ra một cửa sổ native (WebView2, có sẵn trên mọi Windows hiện
-đại) hiển thị đúng giao diện web.
+chạy `BinaryGraphAnalyzer.exe` — mở ra một cửa sổ native (WebView2) hiển thị đúng giao diện web.
+
+> **Cần Microsoft Edge WebView2 Runtime trên máy đích.** Hầu hết Windows 10/11 bản đầy đủ đã có
+> sẵn, nhưng một số máy/máy ảo cài tối giản (ví dụ nhiều ảnh Windows 10 22H2 dùng để test) thì
+> không. Thiếu runtime này, pywebview sẽ *âm thầm* rớt xuống engine MSHTML/IE cũ (log hiện dòng
+> `MSHTML is deprecated`) — engine đó không chạy được app này (Vite build ra
+> `<script type="module">`, MSHTML chưa từng hỗ trợ ES module) nên cửa sổ mở ra trắng/hỏng.
+> `desktop_launcher.py` tự kiểm tra registry trước khi mở cửa sổ và báo lỗi rõ ràng kèm link tải
+> nếu thiếu, thay vì để MSHTML âm thầm nhận việc. Tải Evergreen Bootstrapper (cần internet lúc
+> cài, ~2 MB) tại: https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 > **Không còn HTTP backend.** Bản trước chạy một FastAPI/uvicorn server nội bộ trên cổng loopback
 > ngẫu nhiên và frontend gọi nó qua `fetch()`. Bản hiện tại bỏ hẳn lớp đó: mọi thao tác phân tích

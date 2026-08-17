@@ -247,6 +247,7 @@
    flex slot as GraphViewer without the parent needing to know which of the
    two is currently mounted. */
 .assembly-view-wrap {
+  position: relative; /* anchors .assembly-goto-overlay (Ctrl+G) */
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -282,8 +283,17 @@
 
 /* Full listing fills the scroll container itself, not a fixed max-height
    box like the details-panel preview (.disasm-full) - the whole point here
-   is maximum vertical room. */
-.assembly-listing {
+   is maximum vertical room.
+   `.disasm.assembly-listing` (both classes), not just `.assembly-listing` -
+   this element carries both `disasm` and `assembly-listing` in its
+   className, and plain `.disasm` (below, `max-height: 340px`) has equal
+   specificity to a bare `.assembly-listing` selector, so source order alone
+   decided the winner (confirmed live: `.disasm` sits later in this file and
+   won, silently capping the whole assembly view at 340px tall no matter how
+   much content there was - the empty space below it was that clipped
+   height, not "nothing left to show"). Two classes beats one regardless of
+   order. */
+.disasm.assembly-listing {
   max-height: none;
   border: none;
   background: none;
@@ -300,11 +310,64 @@
   align-items: center;
   border-radius: 3px;
   padding: 1px 2px;
+  cursor: pointer; /* double-click toggles a breakpoint at this row */
+}
+
+.disasm-row.assembly-row:hover {
+  background: color-mix(in srgb, var(--border-strong) 10%, transparent);
 }
 
 .assembly-row-current {
   background: color-mix(in srgb, var(--node-executing) 18%, transparent);
   outline: 1px solid var(--node-executing);
+}
+
+/* Ctrl+G "go to address" landing spot - a brief flash so the eye finds it
+   immediately in a long listing, then fades on its own (no JS needed for
+   the fade itself; AssemblyView clears the class via a timeout so it can
+   flash again on a repeat jump to the same row). */
+.assembly-row-jumped {
+  animation: assembly-row-jumped-flash 1.5s ease-out;
+}
+
+@keyframes assembly-row-jumped-flash {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    outline: 1px solid var(--accent);
+  }
+  100% {
+    background: transparent;
+    outline: 1px solid transparent;
+  }
+}
+
+/* Floating "go to address" input (Ctrl+G) - anchored to the top-right of
+   the assembly view, above the listing, so it never shifts row positions
+   underneath it. */
+.assembly-goto-overlay {
+  position: absolute;
+  top: 40px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.assembly-goto-overlay input {
+  width: 140px;
+}
+
+.assembly-goto-error {
+  font-size: 11.5px;
+  color: var(--risk-high);
+  white-space: nowrap;
 }
 
 .assembly-bp-toggle {

@@ -42,13 +42,6 @@ function isErrorEnvelope(value: unknown): value is { error: ApiErrorDetail } {
  * `DesktopApi.debug_*` method in `backend/app/desktop_bridge.py`. */
 interface DesktopDebugBridge {
   debug_risk_check(analysisId: string): Promise<unknown>;
-  debug_connect(
-    analysisId: string,
-    host: string,
-    port: number,
-    processId: number | null,
-    processName: string | null,
-  ): Promise<unknown>;
   debug_launch_local(analysisId: string, commandLine: string): Promise<unknown>;
   debug_launch_local_upload(
     analysisId: string,
@@ -60,6 +53,7 @@ interface DesktopDebugBridge {
   debug_disassemble(sessionId: string, count: number): Promise<unknown>;
   debug_dump_memory(sessionId: string, address: string, size: number): Promise<unknown>;
   debug_set_breakpoint(sessionId: string, staticAddress: string): Promise<unknown>;
+  debug_set_runtime_breakpoint(sessionId: string, runtimeAddress: string): Promise<unknown>;
   debug_remove_breakpoint(sessionId: string, breakpointId: number): Promise<unknown>;
   debug_step(sessionId: string, mode: StepMode): Promise<unknown>;
   debug_continue(sessionId: string): Promise<unknown>;
@@ -197,34 +191,13 @@ export const debugApi = {
   },
 
   /**
-   * Connect to a `dbgsrv` the user already has running in their own VM and
-   * attach. `host`/`port` come straight from the connect form; nothing here
-   * is defaulted or guessed.
-   */
-  async connect(
-    analysisId: string,
-    host: string,
-    port: number,
-    processId: number | null = null,
-    processName: string | null = null,
-  ): Promise<DebugSessionState> {
-    if (isDesktop()) {
-      return callBridge(async () =>
-        (await getBridge()).debug_connect(analysisId, host, port, processId, processName),
-      );
-    }
-    return request('/api/dynamic/sessions', {
-      method: 'POST',
-      body: JSON.stringify({ analysisId, host, port, processId, processName }),
-    });
-  },
-
-  /**
    * Local-launch: makes the app itself execute `commandLine` directly on
-   * this machine and attach from the entry point - no `dbgsrv`, no VM. This
-   * is the one call in this whole file that causes real process execution;
-   * see `backend/app/dynamic/debug_bridge/client.py`'s
-   * `create_and_attach_local` docstring for the full rationale. The caller
+   * this machine and attach from the entry point - the only way to start a
+   * debug session (the earlier "Connect to dbgsrv" remote path was removed
+   * - see `backend/app/dynamic/debug_bridge/win32_debug.py`'s module
+   * docstring). This is the one call in this whole file that causes real
+   * process execution; see that module's `create_and_attach_local`
+   * docstring for the full rationale. The caller
    * (`DebugConnectModal`) is responsible for having already shown its own
    * local-launch-specific warning - every time, not once-per-session -
    * before calling this.
@@ -341,6 +314,29 @@ export const debugApi = {
     return request(`/api/dynamic/sessions/${sessionId}/breakpoints`, {
       method: 'POST',
       body: JSON.stringify({ staticAddress }),
+    });
+  },
+
+  /**
+   * Same as `setBreakpoint` above, except `runtimeAddress` is used exactly
+   * as given - no static/runtime rebase. For an address outside the
+   * sample's own module (a system DLL like ntdll, e.g. a row from
+   * `AssemblyView`'s live-disassembly fallback) - `setBreakpoint`'s rebase
+   * only holds for the sample's own module; applying it to an unrelated
+   * one's address produces a bogus address that isn't actually mapped
+   * there (confirmed live: a real `ReadVirtual` failure the one time this
+   * was tried through `setBreakpoint` instead). See
+   * `backend/app/dynamic/session.py`'s `set_runtime_breakpoint` docstring.
+   */
+  async setRuntimeBreakpoint(sessionId: string, runtimeAddress: string): Promise<DebugBreakpoint> {
+    if (isDesktop()) {
+      return callBridge(async () =>
+        (await getBridge()).debug_set_runtime_breakpoint(sessionId, runtimeAddress),
+      );
+    }
+    return request(`/api/dynamic/sessions/${sessionId}/breakpoints/runtime`, {
+      method: 'POST',
+      body: JSON.stringify({ runtimeAddress }),
     });
   },
 

@@ -1,20 +1,23 @@
 """Dynamic analysis REST endpoints.
 
-Every route except one is a debug *client* only: an in-memory session
-bookkeeping change or a TCP call to a `dbgsrv` the user already has running,
-at a `host:port` they typed in themselves. There is no fallback path
-anywhere - a bad address, a missing analysis, or a failed connection is
-always a structured error, never a retried/alternate action (safety
-constraint #8). See `app.dynamic`'s package docstring and
-`docs/dynamic-analysis-spec.md` for the full constraint list.
-
-The exceptions are `POST /dynamic/sessions/local` and
-`POST /dynamic/sessions/local/upload`: both cause the app to directly execute
-a binary on the host machine - see
+Local-launch only - `POST /dynamic/sessions/local` and
+`POST /dynamic/sessions/local/upload` cause the app to directly execute a
+binary on the host machine (via `Win32DebugBridge`) - see
 `app.dynamic.debug_bridge.client.DebugBridge.create_and_attach_local`'s
 docstring and `docs/dynamic-analysis-spec.md`'s local-launch addenda for the
-full rationale. They were added after the rest of this router, at explicit,
-repeatedly-confirmed user request.
+full rationale. Every other route is an in-memory session bookkeeping
+change against an already-attached session - there is no fallback path
+anywhere - a missing analysis or a failed launch is always a structured
+error, never a retried/alternate action (safety constraint #8). See
+`app.dynamic`'s package docstring and `docs/dynamic-analysis-spec.md` for
+the full constraint list.
+
+The remote "Connect to dbgsrv" path (`POST /dynamic/sessions`, a TCP client
+to a `dbgsrv` the user ran themselves) that used to sit alongside these was
+removed at explicit user request, along with the `ComtypesDebugBridge`
+(`dbgeng.dll`/COM) implementation it depended on - see
+`app.dynamic.session_store.SessionStore`'s `bridge_factory` docstring for
+why.
 """
 
 from __future__ import annotations
@@ -33,12 +36,12 @@ from app.dynamic.dependencies import get_session_store
 from app.dynamic.models import (
     BreakpointCreateRequest,
     BreakpointModel,
-    ConnectRequest,
     LiveDisassemblyResponse,
     LocalLaunchRequest,
     MemoryDumpResponse,
     RegisterWriteRequest,
     RiskCheckResponse,
+    RuntimeBreakpointCreateRequest,
     SessionStateResponse,
     StepRequest,
 )
@@ -117,39 +120,6 @@ def risk_check(analysis_id: str, repository: RepositoryDep) -> RiskCheckResponse
         sample_name=record.file.name,
         likely_packed=record.summary.likely_packed,
     )
-
-
-@router.post("/sessions", response_model=SessionStateResponse)
-async def create_session(body: ConnectRequest, store: StoreDep) -> SessionStateResponse:
-    """Connect to a `dbgsrv` the user already has running and attach.
-
-    `host`/`port`/`processId`/`processName` come straight from the connect
-    form the user filled in after acknowledging the warning modal - nothing
-    here is defaulted, guessed, or automated.
-    """
-    try:
-        session = await run_in_threadpool(
-            store.create,
-            body.analysis_id,
-            body.host,
-            body.port,
-            body.process_id,
-            body.process_name,
-            dynamic_settings.connect_timeout_seconds,
-        )
-    except DynamicAnalysisNotFound as exc:
-        raise _not_found_analysis(body.analysis_id) from exc
-    except DebugBridgeError as exc:
-        raise _error(
-            502, "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-        ) from exc
-    except Exception as exc:  # pragma: no cover - unexpected bridge failure
-        logger.exception("Kết nối debug session thất bại ngoài dự kiến")
-        raise _error(
-            502, "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-        ) from exc
-
-    return session.snapshot_state()
 
 
 @router.post("/sessions/local", response_model=SessionStateResponse)
@@ -261,6 +231,32 @@ def create_breakpoint(
 
     try:
         return session.set_breakpoint(static_address)
+    except DynamicSessionError as exc:
+        raise _error(409, exc.code, exc.message) from exc
+    except DebugBridgeError as exc:
+        raise _error(502, "DYNAMIC_CONNECT_FAILED", "Không đặt được breakpoint", str(exc)) from exc
+
+
+@router.post("/sessions/{session_id}/breakpoints/runtime", response_model=BreakpointModel)
+def create_runtime_breakpoint(
+    session_id: str, body: RuntimeBreakpointCreateRequest, store: StoreDep
+) -> BreakpointModel:
+    """Same as `create_breakpoint` above, except `body.runtime_address` is
+    used as-is - no `address_map` rebase. For addresses outside the sample's
+    own module (system DLLs like ntdll) - see
+    `DebugSession.set_runtime_breakpoint`'s docstring for why that rebase
+    would be actively wrong there, not just unnecessary."""
+    try:
+        session = store.get(session_id)
+    except DynamicSessionNotFound as exc:
+        raise _not_found_session(session_id) from exc
+
+    runtime_address = try_parse_address(body.runtime_address)
+    if runtime_address is None:
+        raise _invalid_address(body.runtime_address)
+
+    try:
+        return session.set_runtime_breakpoint(runtime_address)
     except DynamicSessionError as exc:
         raise _error(409, exc.code, exc.message) from exc
     except DebugBridgeError as exc:

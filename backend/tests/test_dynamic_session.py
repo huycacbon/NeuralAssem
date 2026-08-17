@@ -77,6 +77,12 @@ class FakeDebugBridge(DebugBridge):
         self.read_memory_unsupported = False
         self.fail_read_memory = False
         self.memory: dict[int, bytes] = {}
+        # Records what `session.py::DebugSession.go` actually passed on the
+        # most recent call - lets tests assert the *runtime*-address set is
+        # wired through correctly without needing a real `ComtypesDebugBridge`
+        # (which needs a live dbgeng target - see that class's `go` docstring
+        # for why the step-loop workaround this wiring feeds exists at all).
+        self.last_go_breakpoint_addresses: frozenset[int] | None = None
 
     def connect(self, host: str, port: int, timeout_seconds: float) -> None:
         if self.fail_connect:
@@ -111,7 +117,10 @@ class FakeDebugBridge(DebugBridge):
     def step_over(self) -> StopReason:
         return self.step_into()
 
-    def go(self, timeout_seconds: float) -> StopReason:
+    def go(
+        self, timeout_seconds: float, breakpoint_addresses: frozenset[int] = frozenset()
+    ) -> StopReason:
+        self.last_go_breakpoint_addresses = breakpoint_addresses
         if self.fail_go:
             raise DebugBridgeError("timeout giả lập")
         return StopReason(kind="breakpoint")
@@ -194,6 +203,53 @@ class TestDebugSession:
         session.clear_breakpoint(bp.id)
         assert bp.id not in bridge.breakpoints
 
+    def test_set_breakpoint_rejects_a_runtime_address_fed_in_as_static(self) -> None:
+        """Confirmed live cause of a real `ReadVirtual`/`ERROR_READ_FAULT`
+        failure: a *runtime* address (e.g. copied from the "Runtime address"
+        field) typed into the *static*-address breakpoint field gets the
+        rebase delta applied a second time, landing on a non-canonical
+        x86-64 address - rejected here, at the point it's computed, instead
+        of surfacing as an opaque dbgeng failure many calls later."""
+        load_base = 0x7FF604A80000
+        preferred_image_base = 0x140000000
+        bridge = FakeDebugBridge(load_base=load_base)
+        session = DebugSession("s", "a", bridge, preferred_image_base=preferred_image_base)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        # An already-runtime address (load_base + a small RVA-like offset) -
+        # exactly the shape of the real bug report - passed in as if it were
+        # static: static_to_runtime rebases it a second time, into garbage.
+        already_runtime_address = load_base + 0x16D0
+
+        with pytest.raises(DynamicSessionError) as excinfo:
+            session.set_breakpoint(already_runtime_address)
+        assert excinfo.value.code == "DYNAMIC_INVALID_ADDRESS"
+        assert bridge.breakpoints == {}  # never reached the bridge at all
+
+    def test_runtime_breakpoint_uses_address_as_is_no_rebase(self) -> None:
+        """`set_runtime_breakpoint` is for addresses outside the sample's own
+        module (e.g. ntdll rows in the live-disassembly fallback) - unlike
+        `set_breakpoint`, it must NOT apply the sample's rebase delta, since
+        that delta is only valid for the sample's own module. Feeding a
+        system-DLL address through the wrong (static-only) path produced a
+        real, live `ReadVirtual thất bại: HRESULT=0x8007001e` - this is the
+        session-layer half of that fix (see `ComtypesDebugBridge`'s
+        `set_breakpoint` for the bridge-layer half)."""
+        bridge = FakeDebugBridge(load_base=0x500000)
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        bp = session.set_runtime_breakpoint(0x7FFC20730AEE)
+
+        assert bp.static_address is None
+        assert bp.runtime_address == "0x7ffc20730aee"  # unchanged - no rebase applied
+        assert bridge.breakpoints[bp.id] == 0x7FFC20730AEE
+
+        state = session.snapshot_state()
+        matching = next(b for b in state.breakpoints if b.id == bp.id)
+        assert matching.static_address is None
+        assert matching.runtime_address == "0x7ffc20730aee"
+
     def test_clear_unknown_breakpoint_raises_dynamic_session_error(self) -> None:
         bridge = FakeDebugBridge()
         session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
@@ -238,6 +294,36 @@ class TestDebugSession:
 
         session.go(5.0)
         assert session.status == SessionStatus.BREAK
+
+    def test_go_passes_active_breakpoints_runtime_addresses_to_bridge(self) -> None:
+        """`ComtypesDebugBridge.go` needs each active breakpoint's *runtime*
+        address to drive its step-loop workaround for free-running past a
+        breakpoint (see that method's docstring: continuing straight through
+        dbgeng's own INT3 breakpoint mechanism was confirmed failing live
+        with `WaitForEvent`'s `ERROR_NOACCESS`, while single-stepping to the
+        same address worked reliably). `session.py::DebugSession.go` is the
+        one piece of that fix a real dbgsrv/dbgeng target isn't needed to
+        verify - that it builds and forwards the correct address set."""
+        bridge = FakeDebugBridge(load_base=0x400000)
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        # No breakpoints yet - `go` must still pass an (empty) set, not None,
+        # so a bridge's `if not breakpoint_addresses:` check works either way.
+        session.go(5.0)
+        assert bridge.last_go_breakpoint_addresses == frozenset()
+
+        bp_a = session.set_breakpoint(0x401000)
+        bp_b = session.set_breakpoint(0x402000)
+
+        session.go(5.0)
+        assert bridge.last_go_breakpoint_addresses == frozenset(
+            {int(bp_a.runtime_address, 16), int(bp_b.runtime_address, 16)}
+        )
+
+        session.clear_breakpoint(bp_a.id)
+        session.go(5.0)
+        assert bridge.last_go_breakpoint_addresses == frozenset({int(bp_b.runtime_address, 16)})
 
     def test_go_failure_sets_error_status_and_reraises(self) -> None:
         bridge = FakeDebugBridge()
@@ -452,23 +538,6 @@ def _make_store(
 
 
 class TestSessionStore:
-    def test_create_looks_up_image_base_from_repository(
-        self, repository_with_record: InMemoryAnalysisRepository
-    ) -> None:
-        store = _make_store(repository_with_record)
-        session = store.create("dyn-test", "127.0.0.1", 5005, None, None, connect_timeout_seconds=1.0)
-
-        assert session.analysis_id == "dyn-test"
-        # sample_artifacts.image_base == 0x400000 (backend/tests/conftest.py)
-        assert session.snapshot_state().status == "attached"
-
-    def test_create_unknown_analysis_raises(
-        self, repository_with_record: InMemoryAnalysisRepository
-    ) -> None:
-        store = _make_store(repository_with_record)
-        with pytest.raises(DynamicAnalysisNotFound):
-            store.create("nope", "h", 1, None, None, 1.0)
-
     def test_get_unknown_session_raises(
         self, repository_with_record: InMemoryAnalysisRepository
     ) -> None:
@@ -480,7 +549,7 @@ class TestSessionStore:
         self, repository_with_record: InMemoryAnalysisRepository
     ) -> None:
         store = _make_store(repository_with_record)
-        session = store.create("dyn-test", "h", 1, None, None, 1.0)
+        session = store.create_local("dyn-test", "a.exe", connect_timeout_seconds=1.0)
 
         assert store.delete(session.session_id) is True
         assert store.delete(session.session_id) is False  # already gone
@@ -492,7 +561,7 @@ class TestSessionStore:
     ) -> None:
         clock = _FakeClock()
         store = _make_store(repository_with_record, idle_timeout_seconds=100, clock=clock)
-        session = store.create("dyn-test", "h", 1, None, None, 1.0)
+        session = store.create_local("dyn-test", "a.exe", connect_timeout_seconds=1.0)
 
         clock.advance(150)
         evicted = store.reap_idle()
@@ -506,24 +575,13 @@ class TestSessionStore:
     ) -> None:
         clock = _FakeClock()
         store = _make_store(repository_with_record, idle_timeout_seconds=100, clock=clock)
-        session = store.create("dyn-test", "h", 1, None, None, 1.0)
+        session = store.create_local("dyn-test", "a.exe", connect_timeout_seconds=1.0)
 
         clock.advance(60)
         store.get(session.session_id)  # counts as activity, per get()'s touch()
         clock.advance(60)  # 120s since create, but only 60s since last touch
 
         assert store.reap_idle() == []
-
-    def test_capacity_eviction_disconnects_oldest(
-        self, repository_with_record: InMemoryAnalysisRepository
-    ) -> None:
-        store = _make_store(repository_with_record, capacity=1)
-        first = store.create("dyn-test", "h", 1, None, None, 1.0)
-        second = store.create("dyn-test", "h", 1, None, None, 1.0)
-
-        with pytest.raises(DynamicSessionNotFound):
-            store.get(first.session_id)
-        assert store.get(second.session_id).session_id == second.session_id
 
     def test_create_local_launches_and_registers_session(
         self, repository_with_record: InMemoryAnalysisRepository

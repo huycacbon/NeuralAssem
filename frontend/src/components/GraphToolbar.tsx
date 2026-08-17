@@ -184,7 +184,7 @@ export function GraphToolbar({
           className={debugSessionActive ? 'toggled' : ''}
           disabled={!analysisReady || debugSessionActive}
           onClick={onDebugClick}
-          title="Mở phiên debug thật, kết nối tới dbgsrv trong một VM cách ly bạn tự chuẩn bị"
+          title="Mở phiên debug thật - app tự thực thi file trực tiếp trên máy này"
         >
           {debugSessionActive ? 'Debug (đang chạy)' : 'Debug'}
         </button>

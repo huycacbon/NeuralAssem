@@ -229,34 +229,47 @@ export function DebugPanel({
       )}
 
       <h4 style={{ marginTop: 12 }}>Breakpoints ({session.breakpoints.length})</h4>
+      <p className="disclaimer" style={{ marginTop: 0, marginBottom: 4 }}>
+        Nhập <strong>địa chỉ static</strong> (ví dụ Entry point ở panel FILE, hoặc địa chỉ trong
+        Function CFG) — <strong>không phải</strong> "Runtime address" ở trên. Cách chắc ăn nhất:
+        double-click thẳng vào dòng lệnh trong assembly view thay vì gõ tay ở đây.
+      </p>
       <div className="chip-row" style={{ marginBottom: 6 }}>
         <input
           type="text"
           className="mono"
           style={{ width: 130 }}
-          placeholder={selectedNodeAddress ?? '0x401000'}
+          placeholder={selectedNodeAddress ?? '0x401000 (static)'}
           value={newBreakpointAddress}
           onChange={(event) => setNewBreakpointAddress(event.target.value)}
+          title="Địa chỉ static (không phải runtime)"
         />
         <button type="button" disabled={loading} onClick={addBreakpoint}>
-          + Breakpoint
+          + Breakpoint (static)
         </button>
       </div>
       {session.breakpoints.length > 0 ? (
         <div className="chip-row">
-          {session.breakpoints.map((bp) => (
-            <span key={bp.id} className="chip breakpoint-chip">
-              {bp.staticAddress}
-              <button
-                type="button"
-                className="chip-remove"
-                onClick={() => onRemoveBreakpoint(bp.id)}
-                aria-label={`Xóa breakpoint ${bp.staticAddress}`}
-              >
-                ×
-              </button>
-            </span>
-          ))}
+          {session.breakpoints.map((bp) => {
+            // `staticAddress` is null for a runtime-address breakpoint (a
+            // system DLL like ntdll, outside the sample's own module - see
+            // `types/debug.ts`'s `DebugBreakpoint` docstring) - show the
+            // runtime address instead, with a hint, rather than "null".
+            const label = bp.staticAddress ?? `${bp.runtimeAddress} (ngoài module)`;
+            return (
+              <span key={bp.id} className="chip breakpoint-chip">
+                {label}
+                <button
+                  type="button"
+                  className="chip-remove"
+                  onClick={() => onRemoveBreakpoint(bp.id)}
+                  aria-label={`Xóa breakpoint ${label}`}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
         </div>
       ) : (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Chưa có breakpoint.</p>

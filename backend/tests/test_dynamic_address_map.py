@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.dynamic.debug_bridge.address_map import (
+    is_canonical_x64_address,
     rebase_delta,
     runtime_to_static,
     static_to_runtime,
@@ -60,3 +61,44 @@ class TestStaticToRuntime:
         static_address = 0x401000
         runtime_address = static_to_runtime(static_address, actual_base, preferred_base)
         assert runtime_address == static_address + (actual_base - preferred_base)
+
+
+class TestIsCanonicalX64Address:
+    @pytest.mark.parametrize(
+        "address",
+        [
+            0x0,
+            0x401000,
+            0x140001690,
+            0x7FF604A80000,
+            0x00007FFFFFFFFFFF,  # max user-space address
+            0xFFFF800000000000,  # min kernel-space address
+            0xFFFFFFFFFFFFFFFF,  # max representable address
+        ],
+    )
+    def test_canonical_addresses_accepted(self, address: int) -> None:
+        assert is_canonical_x64_address(address) is True
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            0x0000800000000000,  # one past max user-space
+            0xFFFF7FFFFFFFFFFF,  # one before min kernel-space
+            0xFFEAC95016D0,  # the actual garbage address from a real bug report -
+            # double-applying the rebase delta to an already-runtime address
+        ],
+    )
+    def test_non_canonical_addresses_rejected(self, address: int) -> None:
+        assert is_canonical_x64_address(address) is False
+
+    def test_real_bug_report_reproduced(self) -> None:
+        """The exact scenario that surfaced this check: a *runtime* address
+        (`load_base + small offset`, as if copied from the "Runtime address"
+        UI field) fed into `static_to_runtime` as if it were static - the
+        delta gets applied twice, landing non-canonical."""
+        load_base = 0x7FF604A80000
+        preferred_image_base = 0x140000000
+        already_runtime_address = load_base + 0x16D0
+
+        double_rebased = static_to_runtime(already_runtime_address, load_base, preferred_image_base)
+        assert is_canonical_x64_address(double_rebased) is False

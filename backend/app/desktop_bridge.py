@@ -39,9 +39,9 @@ from app.dynamic.config import dynamic_settings
 from app.dynamic.debug_bridge.client import DebugBridgeError
 from app.dynamic.models import (
     BreakpointCreateRequest,
-    ConnectRequest,
     LocalLaunchRequest,
     RegisterWriteRequest,
+    RuntimeBreakpointCreateRequest,
     StepRequest,
 )
 from app.dynamic.risk_gate import derive_risk_bucket
@@ -312,48 +312,6 @@ class DesktopApi:
             "likelyPacked": record.summary.likely_packed,
         }
 
-    def debug_connect(
-        self,
-        analysis_id: str,
-        host: str,
-        port: int,
-        process_id: int | None,
-        process_name: str | None,
-    ) -> dict[str, Any]:
-        try:
-            ConnectRequest(
-                analysisId=analysis_id,
-                host=host,
-                port=port,
-                processId=process_id,
-                processName=process_name,
-            )
-        except Exception as exc:
-            return _error_envelope("VALIDATION_ERROR", "Tham số kết nối không hợp lệ", str(exc))
-
-        try:
-            session = self._debug_store.create(
-                analysis_id,
-                host,
-                port,
-                process_id,
-                process_name,
-                dynamic_settings.connect_timeout_seconds,
-            )
-        except DynamicAnalysisNotFound:
-            return _not_found(analysis_id)
-        except DebugBridgeError as exc:
-            return _error_envelope(
-                "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-            )
-        except Exception as exc:  # pragma: no cover - unexpected bridge failure
-            logger.exception("Kết nối debug session thất bại ngoài dự kiến")
-            return _error_envelope(
-                "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-            )
-
-        return _dump(session.snapshot_state())
-
     def debug_launch_local(self, analysis_id: str, command_line: str) -> dict[str, Any]:
         """Local-launch: makes THIS process execute `command_line` directly
         on this machine - see
@@ -447,6 +405,30 @@ class DesktopApi:
 
         try:
             return _dump(session.set_breakpoint(address))
+        except DynamicSessionError as exc:
+            return _error_envelope(exc.code, exc.message)
+        except DebugBridgeError as exc:
+            return _error_envelope("DYNAMIC_CONNECT_FAILED", "Không đặt được breakpoint", str(exc))
+
+    def debug_set_runtime_breakpoint(self, session_id: str, runtime_address: str) -> dict[str, Any]:
+        """Same as `debug_set_breakpoint` above, except `runtime_address` is
+        used as-is - no `address_map` rebase. For addresses outside the
+        sample's own module (system DLLs like ntdll) - see
+        `DebugSession.set_runtime_breakpoint`'s docstring."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+
+        RuntimeBreakpointCreateRequest(runtimeAddress=runtime_address)  # validates shape only
+        address = try_parse_address(runtime_address)
+        if address is None:
+            return _error_envelope(
+                "DYNAMIC_INVALID_ADDRESS", "Địa chỉ không hợp lệ", f"address={runtime_address}"
+            )
+
+        try:
+            return _dump(session.set_runtime_breakpoint(address))
         except DynamicSessionError as exc:
             return _error_envelope(exc.code, exc.message)
         except DebugBridgeError as exc:

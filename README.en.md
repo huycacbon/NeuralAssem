@@ -482,8 +482,18 @@ powershell -ExecutionPolicy Bypass -File build_desktop_app.ps1
 
 The output lands in `dist_desktop\BinaryGraphAnalyzer\` (~600 MB, mostly angr's precompiled
 dependencies — z3-solver, capstone, pyvex). Copy the whole folder to another Windows 10/11 x64
-machine and run `BinaryGraphAnalyzer.exe` — it opens a native window (WebView2, present on any
-modern Windows) showing the same UI as the web app.
+machine and run `BinaryGraphAnalyzer.exe` — it opens a native window (WebView2) showing the same
+UI as the web app.
+
+> **Requires the Microsoft Edge WebView2 Runtime on the target machine.** Most full Windows
+> 10/11 installs already have it, but some minimal machines/VMs (a number of Windows 10 22H2 test
+> images among them) don't. Without it, pywebview *silently* falls back to the legacy MSHTML/IE
+> engine (the log line `MSHTML is deprecated` is that fallback happening) — which cannot run this
+> app at all: Vite emits `<script type="module">`, and MSHTML has never supported ES modules, so
+> the window opens blank/broken. `desktop_launcher.py` checks the registry before opening the
+> window and fails with a clear message and a download link instead of letting MSHTML silently
+> take over. Get the Evergreen Bootstrapper (needs internet to install, ~2 MB) at:
+> https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 > **No HTTP backend anymore.** An earlier version ran an internal FastAPI/uvicorn server on a
 > random loopback port, with the frontend calling it via `fetch()`. The current version drops that

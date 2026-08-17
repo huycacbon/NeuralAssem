@@ -52,6 +52,39 @@ function parseHexAddress(address: string | null | undefined): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+/** How many instructions `debugFunctionCfg` should carry before the debug
+ *  assembly view (`AssemblyView`) is considered "full enough" - short
+ *  functions (the common case for hand-written stubs, thunks, tiny
+ *  wrappers) otherwise leave the view mostly blank below a handful of rows,
+ *  since `AssemblyView` never fetches more on its own - it just flattens
+ *  whatever `graph` it's given. ~45 rows comfortably fills a typical panel
+ *  height without needing to scroll on first paint. */
+const MIN_ASSEMBLY_INSTRUCTION_COUNT = 45;
+/** Upper bound on how many *additional* functions get merged in to reach
+ *  that target - caps the fetch burst for a binary made of many tiny
+ *  functions in a row (each contributes only a few instructions) so this
+ *  can't balloon into dozens of requests. */
+const MAX_EXTRA_FUNCTIONS_TO_FILL = 6;
+
+function countBasicBlockInstructions(graph: Graph): number {
+  return graph.nodes
+    .filter((node) => node.kind === 'basic_block')
+    .reduce((sum, node) => sum + (node.metadata.instructions?.length ?? 0), 0);
+}
+
+/** Concatenates `extra`'s nodes/edges onto `base` - used purely to give
+ *  `AssemblyView` more rows to flatten (see `MIN_ASSEMBLY_INSTRUCTION_COUNT`).
+ *  `base`'s own `metadata` (function name/address the view's header reads)
+ *  is kept as-is - the merged-in function is additional *content*, not a
+ *  change of "which function is this view about". */
+function appendGraphForFilling(base: Graph, extra: Graph): Graph {
+  return {
+    nodes: [...base.nodes, ...extra.nodes],
+    edges: [...base.edges, ...extra.edges],
+    metadata: base.metadata,
+  };
+}
+
 export default function App(): JSX.Element {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [stage, setStage] = useState<AnalysisStage>('idle');
@@ -94,6 +127,14 @@ export default function App(): JSX.Element {
   const [debugViewMode, setDebugViewMode] = useState<'graph' | 'assembly'>('graph');
   const [debugFunctionCfg, setDebugFunctionCfg] = useState<Graph | null>(null);
   const [loadingDebugFunctionCfg, setLoadingDebugFunctionCfg] = useState(false);
+  // Ctrl+G "jump to a function not currently shown" (AssemblyView's tier 2) -
+  // when set, overrides `debugFunctionCfg` as what the assembly view
+  // displays, independent of the debugger's actual PC. Cleared the moment the
+  // PC itself moves (next step/continue/breakpoint), so a manual jump never
+  // lingers past the debugger no longer being stopped where the user left it.
+  const [pinnedAssemblyGraph, setPinnedAssemblyGraph] = useState<Graph | null>(null);
+  const [pinnedAssemblyJumpTarget, setPinnedAssemblyJumpTarget] = useState<number | null>(null);
+  const [loadingPinnedAssembly, setLoadingPinnedAssembly] = useState(false);
   // Fallback for when the PC has no static function to show at all (system
   // DLLs, most commonly) - see AssemblyView's module docstring.
   const [liveDisassembly, setLiveDisassembly] = useState<LiveDisassemblyResponse | null>(null);
@@ -417,6 +458,27 @@ export default function App(): JSX.Element {
     [functions],
   );
 
+  // Address-sorted once per `functions` change - `nextFunctionAfter` below
+  // (used only to fill out a too-short debug assembly listing, see
+  // `MIN_ASSEMBLY_INSTRUCTION_COUNT`) walks this instead of re-sorting on
+  // every call.
+  const functionsSortedByAddress = useMemo(
+    () =>
+      [...functions].sort(
+        (a, b) => (parseHexAddress(a.address) ?? 0) - (parseHexAddress(b.address) ?? 0),
+      ),
+    [functions],
+  );
+
+  const nextFunctionAfter = useCallback(
+    (address: string): FunctionSummary | null => {
+      const index = functionsSortedByAddress.findIndex((fn) => fn.address === address);
+      if (index === -1) return null;
+      return functionsSortedByAddress[index + 1] ?? null;
+    },
+    [functionsSortedByAddress],
+  );
+
   /**
    * Two *independent* highlights, each always computed against the graph it
    * actually belongs to - not against `activeGraph` (whatever is currently
@@ -434,6 +496,55 @@ export default function App(): JSX.Element {
     () => parseHexAddress(debug.session?.staticAddress ?? null),
     [debug.session?.staticAddress],
   );
+
+  // A manual Ctrl+G jump (AssemblyView's tier 2, see its module docstring) is
+  // a temporary detour from "follow the debugger's PC" - the moment the PC
+  // itself moves again (step/continue/breakpoint), snap back to auto-follow
+  // rather than leaving the user staring at a function execution has long
+  // since left.
+  useEffect(() => {
+    setPinnedAssemblyGraph(null);
+    setPinnedAssemblyJumpTarget(null);
+  }, [executingAddressValue]);
+
+  /** AssemblyView's Ctrl+G tier 2: `address` wasn't in the currently
+   *  rendered listing, so look up whichever function's address *range*
+   *  actually contains it, fetch its CFG (sharing the same cache as the
+   *  graph view and the PC-follow effect below), and pin the assembly view
+   *  to it. A miss (no function covers this address at all) surfaces as a
+   *  banner, same as any other failed lookup in this app. */
+  const handleJumpToStaticAddress = useCallback(
+    (address: number) => {
+      if (!analysis) return;
+      const enclosingFunction = findEnclosingFunction(address);
+      if (!enclosingFunction) {
+        addBanner(
+          `Không tìm thấy hàm nào chứa địa chỉ 0x${address.toString(16)} trong graph tĩnh.`,
+          'error',
+        );
+        return;
+      }
+      setLoadingPinnedAssembly(true);
+      void (async () => {
+        try {
+          let graph = cfgCacheRef.current.get(enclosingFunction.address);
+          if (!graph) {
+            graph = await analysisApi.getFunctionCfg(analysis.analysisId, enclosingFunction.address);
+            cfgCacheRef.current.set(enclosingFunction.address, graph);
+          }
+          setPinnedAssemblyGraph(graph);
+          setPinnedAssemblyJumpTarget(address);
+        } catch (error) {
+          if (error instanceof ApiError) addBanner(error.message, 'error');
+        } finally {
+          setLoadingPinnedAssembly(false);
+        }
+      })();
+    },
+    [analysis, findEnclosingFunction, addBanner],
+  );
+
+  const handlePinnedJumpConsumed = useCallback(() => setPinnedAssemblyJumpTarget(null), []);
 
   /** `moduleLoadBase - preferredImageBase` for the active session, `null`
    *  when there is none - the single source of truth every component below
@@ -508,7 +619,9 @@ export default function App(): JSX.Element {
   // the debugger's PC, reusing the same CFG cache the graph view and the
   // details-panel preview already share - stepping within one function (by
   // far the common case) costs zero extra fetches, and stepping into a new
-  // function fetches exactly once.
+  // function fetches exactly once (plus whatever `MIN_ASSEMBLY_INSTRUCTION_COUNT`
+  // needs merged in - each of those is itself cached the same way, so
+  // re-entering an already-filled function later never re-fetches).
   useEffect(() => {
     if (!analysis || executingAddressValue === null) {
       setDebugFunctionCfg(null);
@@ -521,19 +634,39 @@ export default function App(): JSX.Element {
     }
     if (debugFunctionCfg?.metadata.functionAddress === enclosingFunction.address) return;
 
-    const cached = cfgCacheRef.current.get(enclosingFunction.address);
-    if (cached) {
-      setDebugFunctionCfg(cached);
-      return;
-    }
-
     let cancelled = false;
+
+    const getCfg = async (address: string): Promise<Graph> => {
+      const cached = cfgCacheRef.current.get(address);
+      if (cached) return cached;
+      const graph = await analysisApi.getFunctionCfg(analysis.analysisId, address);
+      cfgCacheRef.current.set(address, graph);
+      return graph;
+    };
+
     setLoadingDebugFunctionCfg(true);
     void (async () => {
       try {
-        const graph = await analysisApi.getFunctionCfg(analysis.analysisId, enclosingFunction.address);
-        cfgCacheRef.current.set(enclosingFunction.address, graph);
-        if (!cancelled) setDebugFunctionCfg(graph);
+        let merged = await getCfg(enclosingFunction.address);
+        // Short function (a stub/thunk/tiny wrapper, common) - merge in
+        // however many of the *next* functions by address it takes to give
+        // AssemblyView enough rows to actually fill the panel, capped so a
+        // run of many tiny functions can't balloon into dozens of fetches.
+        // See MIN_ASSEMBLY_INSTRUCTION_COUNT's docstring.
+        let cursorAddress = enclosingFunction.address;
+        let mergedCount = 0;
+        while (
+          countBasicBlockInstructions(merged) < MIN_ASSEMBLY_INSTRUCTION_COUNT &&
+          mergedCount < MAX_EXTRA_FUNCTIONS_TO_FILL
+        ) {
+          const next = nextFunctionAfter(cursorAddress);
+          if (!next) break;
+          const nextGraph = await getCfg(next.address);
+          merged = appendGraphForFilling(merged, nextGraph);
+          cursorAddress = next.address;
+          mergedCount += 1;
+        }
+        if (!cancelled) setDebugFunctionCfg(merged);
       } catch {
         if (!cancelled) setDebugFunctionCfg(null);
       } finally {
@@ -544,7 +677,7 @@ export default function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [analysis, executingAddressValue, findEnclosingFunction, debugFunctionCfg]);
+  }, [analysis, executingAddressValue, findEnclosingFunction, debugFunctionCfg, nextFunctionAfter]);
 
   const debugRuntimeAddress = debug.session?.runtimeAddress ?? null;
   const debugSessionId = debug.session?.sessionId ?? null;
@@ -563,7 +696,11 @@ export default function App(): JSX.Element {
     setLoadingLiveDisassembly(true);
     void (async () => {
       try {
-        const result = await debugApi.getLiveDisassembly(debugSessionId, 60);
+        // 200 = the backend's own clamp ceiling (session.py's
+        // disassemble_current) - fetching the max lets the listing actually
+        // fill a tall viewport instead of leaving blank space below a short
+        // 60-instruction window.
+        const result = await debugApi.getLiveDisassembly(debugSessionId, 200);
         if (!cancelled) setLiveDisassembly(result);
       } catch {
         if (!cancelled) setLiveDisassembly(null);
@@ -594,6 +731,26 @@ export default function App(): JSX.Element {
     [debug],
   );
 
+  /** Same as `handleToggleBreakpointAtAddress` above, for a live-disassembly
+   *  row (a system DLL like ntdll, outside the sample's own module) - the
+   *  address is already a *runtime* one, so this goes through
+   *  `setRuntimeBreakpoint` instead of `setBreakpoint`, never the static
+   *  rebase (see `AssemblyView`'s module docstring for why that distinction
+   *  matters - the wrong one produced a real, live breakpoint failure). */
+  const handleToggleRuntimeBreakpointAtAddress = useCallback(
+    (runtimeAddress: string) => {
+      const existing = debug.session?.breakpoints.find(
+        (bp) => bp.staticAddress === null && bp.runtimeAddress === runtimeAddress,
+      );
+      if (existing) {
+        void debug.removeBreakpoint(existing.id);
+      } else {
+        void debug.setRuntimeBreakpoint(runtimeAddress);
+      }
+    },
+    [debug],
+  );
+
   /* ---------------- Debug (dynamic analysis) handlers ---------------- */
 
   const handleDebugClick = useCallback(() => {
@@ -607,18 +764,6 @@ export default function App(): JSX.Element {
   const handleCloseDebugModal = useCallback(() => {
     setDebugModalOpen(false);
   }, []);
-
-  const handleConnectDebug = useCallback(
-    (host: string, port: number, processId: number | null, processName: string | null) => {
-      if (!analysis) return;
-      void debug.connect(analysis.analysisId, host, port, processId, processName).then((state) => {
-        // Only close on success - a failed connect keeps the modal open so
-        // the user sees the error and can retry with a corrected host:port.
-        if (state) setDebugModalOpen(false);
-      });
-    },
-    [analysis, debug],
-  );
 
   const handleLaunchLocalDebug = useCallback(
     (commandLine: string) => {
@@ -724,7 +869,11 @@ export default function App(): JSX.Element {
   const handleExport = useCallback(async () => {
     if (!analysis) return;
     try {
-      const { filename, content } = await analysisApi.exportMarkdown(analysis.analysisId);
+      // Passes the active debug session's rebase delta (if any) so the
+      // exported document's addresses reflect the real runtime address
+      // rather than the static one - same rebase already applied to
+      // on-screen addresses elsewhere (see `rebaseDelta`'s docstring above).
+      const { filename, content } = await analysisApi.exportMarkdown(analysis.analysisId, rebaseDelta);
       // Blob + object URL works identically whether `content` came over HTTP
       // or straight from the desktop bridge - no server-sent
       // Content-Disposition needed either way.
@@ -740,7 +889,7 @@ export default function App(): JSX.Element {
     } catch (error) {
       if (error instanceof ApiError) addBanner(error.message, 'error');
     }
-  }, [analysis, addBanner]);
+  }, [analysis, addBanner, rebaseDelta]);
 
   const statusText = useMemo(() => {
     if (stage === 'failed') return 'Phân tích thất bại';
@@ -794,7 +943,6 @@ export default function App(): JSX.Element {
           connecting={debug.loading}
           connectError={debug.error}
           onClose={handleCloseDebugModal}
-          onConnect={handleConnectDebug}
           onLaunchLocal={handleLaunchLocalDebug}
           uploadedFile={uploadedFile}
           onLaunchLocalFromUpload={handleLaunchLocalFromUploadDebug}
@@ -851,8 +999,8 @@ export default function App(): JSX.Element {
 
           {debug.session && debugViewMode === 'assembly' ? (
             <AssemblyView
-              graph={debugFunctionCfg}
-              loadingGraph={loadingDebugFunctionCfg}
+              graph={pinnedAssemblyGraph ?? debugFunctionCfg}
+              loadingGraph={pinnedAssemblyGraph ? loadingPinnedAssembly : loadingDebugFunctionCfg}
               liveDisassembly={liveDisassembly}
               loadingLive={loadingLiveDisassembly}
               status={debug.session.status}
@@ -862,6 +1010,10 @@ export default function App(): JSX.Element {
               breakpoints={debug.session.breakpoints}
               breakpointsDisabled={debug.loading}
               onToggleBreakpoint={handleToggleBreakpointAtAddress}
+              onToggleRuntimeBreakpoint={handleToggleRuntimeBreakpointAtAddress}
+              onJumpToAddress={handleJumpToStaticAddress}
+              externalJumpTarget={pinnedAssemblyJumpTarget}
+              onExternalJumpConsumed={handlePinnedJumpConsumed}
             />
           ) : (
             <GraphViewer

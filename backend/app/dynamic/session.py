@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from app.dynamic.debug_bridge.address_map import runtime_to_static, static_to_runtime
+from app.dynamic.debug_bridge.address_map import (
+    is_canonical_x64_address,
+    runtime_to_static,
+    static_to_runtime,
+)
 from app.dynamic.debug_bridge.client import DebugBridge, StopReason
 from app.dynamic.models import (
     BreakpointModel,
@@ -57,7 +61,13 @@ class DynamicSessionError(RuntimeError):
 @dataclass
 class _Breakpoint:
     id: int
-    static_address: int
+    #: `None` for a breakpoint set directly at a *runtime* address (see
+    #: `set_runtime_breakpoint`) - typically somewhere outside the sample's
+    #: own module (a system DLL like ntdll), where no meaningful static
+    #: address exists at all: the static graph never covered it, and
+    #: `address_map`'s rebase delta is only valid for the sample's own
+    #: module, not an unrelated one loaded at its own, different base.
+    static_address: int | None
     runtime_address: int
 
 
@@ -118,6 +128,12 @@ class DebugSession:
                 self._bridge.connect(host, port, timeout_seconds)
                 module = self._bridge.attach(process_id, process_name)
                 self._module_load_base = module.load_base
+                logger.warning(
+                    "Remote debug attach: session=%s load_base=0x%x preferred_image_base=0x%x",
+                    self.session_id,
+                    module.load_base,
+                    self._preferred_image_base,
+                )
                 self.status = SessionStatus.ATTACHED
             except Exception as exc:
                 self.status = SessionStatus.ERROR
@@ -159,6 +175,12 @@ class DebugSession:
             try:
                 module = self._bridge.create_and_attach_local(command_line)
                 self._module_load_base = module.load_base
+                logger.warning(
+                    "Local-launch debug: session=%s load_base=0x%x preferred_image_base=0x%x",
+                    self.session_id,
+                    module.load_base,
+                    self._preferred_image_base,
+                )
                 self.status = SessionStatus.ATTACHED
             except Exception as exc:
                 self.status = SessionStatus.ERROR
@@ -194,12 +216,31 @@ class DebugSession:
         return self._module_load_base
 
     def set_breakpoint(self, static_address: int) -> BreakpointModel:
+        """For an address inside the sample's *own* module - the normal
+        case, everything reachable from the graph/CFG/function list. Rebases
+        through `address_map` using the sample's own load base."""
         with self._lock:
             self.touch()
             load_base = self._require_load_base()
             runtime_address = static_to_runtime(
                 static_address, load_base, self._preferred_image_base
             )
+            if not is_canonical_x64_address(runtime_address):
+                # Confirmed live cause: a *runtime* address (e.g. copied from
+                # the "Runtime address" field, or a live-disassembly row -
+                # that one should go through `set_runtime_breakpoint`
+                # instead) fed into this *static*-address parameter gets the
+                # rebase delta applied a second time, landing outside any
+                # address x86-64 can even represent - surfaces many calls
+                # later as an opaque `ReadVirtual` failure otherwise. Caught
+                # right here instead, with a message that says what's
+                # actually wrong.
+                raise DynamicSessionError(
+                    "DYNAMIC_INVALID_ADDRESS",
+                    f"Địa chỉ 0x{static_address:x} sau khi quy đổi sang runtime "
+                    f"(0x{runtime_address:x}) không phải địa chỉ x86-64 hợp lệ - có thể bạn đã "
+                    "nhập nhầm 'Runtime address' thay vì 'Static address' vào ô này.",
+                )
             bp_id = self._bridge.set_breakpoint(runtime_address)
             self._breakpoints[bp_id] = _Breakpoint(
                 id=bp_id, static_address=static_address, runtime_address=runtime_address
@@ -207,6 +248,37 @@ class DebugSession:
             return BreakpointModel(
                 id=bp_id,
                 static_address=format_address(static_address),
+                runtime_address=format_address(runtime_address),
+            )
+
+    def set_runtime_breakpoint(self, runtime_address: int) -> BreakpointModel:
+        """For an address the caller already knows is a *runtime* address -
+        the live-disassembly assembly view's fallback rows (system DLLs like
+        ntdll, outside the sample's own module - see `disassemble_current`'s
+        docstring), where `set_breakpoint`'s static->runtime rebase would be
+        actively wrong: that math only holds for the sample's own module,
+        and applying it to an unrelated module's address produces a bogus
+        address that is not actually mapped there, which is exactly what
+        produced a live `ReadVirtual` failure (`ERROR_READ_FAULT`) the one
+        time this was tried through the static-only `set_breakpoint` path.
+        No `address_map` translation here at all - the address is used
+        exactly as given.
+        """
+        with self._lock:
+            self.touch()
+            self._require_load_base()  # still requires an attached session
+            if not is_canonical_x64_address(runtime_address):
+                raise DynamicSessionError(
+                    "DYNAMIC_INVALID_ADDRESS",
+                    f"Địa chỉ 0x{runtime_address:x} không phải địa chỉ x86-64 hợp lệ.",
+                )
+            bp_id = self._bridge.set_breakpoint(runtime_address)
+            self._breakpoints[bp_id] = _Breakpoint(
+                id=bp_id, static_address=None, runtime_address=runtime_address
+            )
+            return BreakpointModel(
+                id=bp_id,
+                static_address=None,
                 runtime_address=format_address(runtime_address),
             )
 
@@ -271,7 +343,17 @@ class DebugSession:
             self.touch()
             self.status = SessionStatus.RUNNING
             try:
-                reason = self._bridge.go(timeout_seconds)
+                # Always the *runtime* addresses (already translated in
+                # `set_breakpoint`, never the static ones the API/UI deal
+                # in) - `ComtypesDebugBridge.go` needs these to drive its
+                # step-loop workaround for free-running past a breakpoint;
+                # see that method's docstring for why it exists. A bridge
+                # that resumes reliably through its own native breakpoint
+                # mechanism is free to just ignore this set.
+                breakpoint_addresses = frozenset(
+                    bp.runtime_address for bp in self._breakpoints.values()
+                )
+                reason = self._bridge.go(timeout_seconds, breakpoint_addresses)
                 self.status = SessionStatus.BREAK
                 return reason
             except Exception as exc:
@@ -419,7 +501,11 @@ class DebugSession:
                 breakpoints=[
                     BreakpointModel(
                         id=bp.id,
-                        static_address=format_address(bp.static_address),
+                        static_address=(
+                            format_address(bp.static_address)
+                            if bp.static_address is not None
+                            else None
+                        ),
                         runtime_address=format_address(bp.runtime_address),
                     )
                     for bp in self._breakpoints.values()

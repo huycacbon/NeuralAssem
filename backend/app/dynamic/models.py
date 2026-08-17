@@ -14,24 +14,6 @@ from pydantic import Field
 from app.models.graph import CamelModel
 
 
-class ConnectRequest(CamelModel):
-    """Body of ``POST /dynamic/sessions``.
-
-    ``host``/``port`` are exactly what the user typed in the mandatory
-    warning-modal's connect form - the address of a ``dbgsrv`` they already
-    have running in their own VM. Neither is ever defaulted or guessed by
-    this app.
-    """
-
-    analysis_id: str
-    host: str
-    port: int = Field(gt=0, le=65535)
-    #: Hedge against the two documented dbgsrv attach workflows (see
-    #: docs/dynamic-analysis-vm-setup.md) - at least one should be given.
-    process_id: int | None = None
-    process_name: str | None = None
-
-
 class LocalLaunchRequest(CamelModel):
     """Body of ``POST /dynamic/sessions/local``.
 
@@ -54,6 +36,14 @@ class BreakpointCreateRequest(CamelModel):
     #: Hex string in the *static* address space (e.g. "0x401000"), the same
     #: form every other address in this app's API already uses.
     static_address: str
+
+
+class RuntimeBreakpointCreateRequest(CamelModel):
+    #: Hex string in the *runtime* address space directly - no address_map
+    #: rebase applied. For addresses outside the sample's own module (system
+    #: DLLs like ntdll) where no meaningful static address exists - see
+    #: `DebugSession.set_runtime_breakpoint`'s docstring.
+    runtime_address: str
 
 
 class StepRequest(CamelModel):
@@ -87,7 +77,10 @@ class StackFrameModel(CamelModel):
 
 class BreakpointModel(CamelModel):
     id: int
-    static_address: str
+    #: ``None`` for a breakpoint set via ``set_runtime_breakpoint`` (outside
+    #: the sample's own module) - see `DebugSession.set_runtime_breakpoint`'s
+    #: docstring.
+    static_address: str | None
     runtime_address: str
 
 

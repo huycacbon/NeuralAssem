@@ -28,7 +28,11 @@ export interface DebugStackFrame {
 
 export interface DebugBreakpoint {
   id: number;
-  staticAddress: string;
+  /** null for a breakpoint set via `setRuntimeBreakpoint` - outside the
+   *  sample's own module (e.g. a system DLL like ntdll), where no
+   *  meaningful static address exists. See
+   *  `backend/app/dynamic/session.py`'s `set_runtime_breakpoint` docstring. */
+  staticAddress: string | null;
   runtimeAddress: string;
 }
 

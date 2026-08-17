@@ -38,3 +38,34 @@ def static_to_runtime(
     """Inverse of :func:`runtime_to_static` - e.g. to place a breakpoint at
     a static-graph address the user picked before connecting."""
     return static_address + rebase_delta(actual_load_base, preferred_image_base)
+
+
+def is_canonical_x64_address(address: int) -> bool:
+    """Whether `address` is a structurally valid x86-64 virtual address -
+    bits 48-63 must all equal bit 47 (the "canonical form" the CPU itself
+    enforces; a non-canonical address faults before any OS/driver even gets
+    a chance to say "not mapped").
+
+    Exists as a fast, purely-arithmetic sanity check callers do *before*
+    asking dbgeng to read/write an address at all - confirmed live: feeding
+    an already-*runtime* address into `static_to_runtime` a second time
+    (double-applying the rebase delta) produces exactly this kind of
+    non-canonical garbage, which then surfaces many calls later as an opaque
+    `ReadVirtual`/`ERROR_READ_FAULT` deep inside a breakpoint plant - by the
+    time that happens, the real mistake (wrong address space, not a
+    memory/engine problem) is hard to distinguish from a dozen other
+    possible causes. Catching it right where the address is computed, with
+    a message that says what's actually wrong, is much cheaper for
+    everyone - the user included - than diagnosing the eventual symptom.
+
+    Not Windows-specific and not related to whether the address happens to
+    be *mapped* - a canonical address can still be unmapped (a separate,
+    legitimate `ReadVirtual` failure); this only rejects addresses the CPU
+    itself would never accept in the first place.
+    """
+    # `address` is always treated as an unsigned 64-bit value in this app
+    # (see `format_address`) - bits 47-63 (17 bits) are either all 0 (user
+    # space) or all 1 (`0x1FFFF` - kernel space) for a canonical address,
+    # anything else falls in the forbidden non-canonical gap between them.
+    top17 = address >> 47
+    return top17 == 0 or top17 == 0x1FFFF

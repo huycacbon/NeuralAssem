@@ -2,15 +2,47 @@
 
 🇻🇳 Tiếng Việt (tài liệu chính) · [🇬🇧 English](README.en.md) · [Security policy](SECURITY.md)
 
-Công cụ **phân tích tĩnh** file PE (`.exe` / `.dll`) chạy hoàn toàn local, hiển thị kết quả
-disassembly dưới dạng đồ thị tương tác giống mạng nơ-ron.
+Công cụ **phân tích tĩnh + động** file PE (`.exe` / `.dll`) chạy hoàn toàn local, biến kết quả
+disassembly thành đồ thị tương tác giống mạng nơ-ron — và thành một báo cáo Markdown gọn, **sinh
+ra để dán thẳng vào ChatGPT/Claude**, thay vì bắt bạn tự tay chép hàng nghìn dòng disassembly.
+
+### 🤖 Vì sao hợp để phân tích PE *cùng với* AI
+
+Đưa nguyên file `.exe` cho AI đọc thì vô nghĩa — AI không thực thi được binary, cũng không tự
+disassemble được. Dán nguyên dump của angr/IDA/Ghidra vào chat cũng không xong — một binary tầm
+trung có thể ra tới hàng nghìn function, vượt context window ngay lập tức, và AI phải "mò" trong
+một đống JSON lồng nhau không theo thứ tự ưu tiên nào.
+
+Công cụ này đứng ở giữa hai việc đó:
+
+```mermaid
+flowchart LR
+    A["Upload .exe/.dll"] --> B["angr CFGFast<br/>disassemble + risk score"]
+    B --> C["Nút Xuất Markdown<br/>gọn · ưu tiên theo risk · giới hạn cứng"]
+    C --> D["Dán vào ChatGPT / Claude / ..."]
+    D --> E["Hỏi: hàm này làm gì?<br/>có phải process injection?<br/>giải thích luồng gọi API này"]
+```
+
+- **Risk score xếp hạng trước, AI không phải tự đoán nên đọc hàm nào trước** trong hàng nghìn hàm.
+- **Giới hạn cứng ở mọi bảng** (số hàng risk, số edge, số function có pseudocode) — không có
+  chuyện AI bị cắt giữa chừng một cách âm thầm; phần bị bỏ luôn ghi rõ số lượng.
+- **Tài liệu xuất ra bằng tiếng Anh** dù giao diện dùng tiếng Việt — tokenize gọn hơn cho hầu hết
+  model, đỡ tốn context hơn hẳn dump JSON gốc.
+- **Không có API key hay lời gọi AI nào từ bên trong app.** Đây không phải "tích hợp AI" giấu một
+  cuộc gọi ra ngoài — app chỉ chuẩn bị dữ liệu sạch, bạn tự dán tay vào công cụ AI mình chọn. File
+  mẫu và kết quả phân tích không rời khỏi máy trừ đúng đoạn bạn copy.
+- Vẫn xem được toàn bộ đồ thị/CFG/pseudocode trực quan trên UI — báo cáo Markdown là một lối tắt
+  cho AI, không thay thế phần xem trực tiếp.
+
+Chi tiết định dạng export: [mục 8](#định-dạng-export-markdown).
 
 > **An toàn:** công cụ này **không bao giờ thực thi** file mẫu. Binary chỉ được đọc như dữ liệu
 > và disassembly bằng angr. Không sandbox, không emulator, không gửi file hay hash ra Internet.
 > Backend (`backend/app/`) không dùng `subprocess` — có unit test khóa cứng điều này. Riêng bản
 > desktop ([mục 13](#13-bản-desktop-không-cần-cài-gì)) dùng `subprocess` đúng một chỗ, ở launcher
 > *ngoài* `backend/app/`, và chỉ để khởi động chính Python đóng gói sẵn của nó — không bao giờ
-> chạm tới file mẫu.
+> chạm tới file mẫu. Chế độ Debug ([mục 15](#15-debug-dynamic-analysis)) là ngoại lệ tường minh,
+> tách riêng, xem ghi chú ở mục đó.
 
 ---
 
@@ -27,7 +59,9 @@ ba chế độ xem:
 | **API Graph** | Function → Imported API (bipartite, mỗi API đúng một node) |
 
 Ngoài graph, công cụ trích xuất: entry point, danh sách function, imported API (kèm DLL),
-strings, và một **risk score heuristic** để ưu tiên phân tích.
+strings, và một **risk score heuristic** để ưu tiên phân tích. Cần đi sâu hơn phân tích tĩnh có
+thể mở thêm một phiên **debug thật** (breakpoint, step, đọc/sửa register, xem assembly sống) —
+xem [mục 15](#15-debug-dynamic-analysis).
 
 > Risk score là điểm heuristic để ưu tiên phân tích, **không phải kết luận phát hiện mã độc**.
 
@@ -104,7 +138,7 @@ binary-graph-analyzer/
 │   │   └── utils/
 │   │       ├── address.py             Chuẩn hóa địa chỉ, node id
 │   │       └── security.py            Validate, hash, temp file
-│   ├── tests/                         201 test
+│   ├── tests/                         300 test
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -425,10 +459,11 @@ cd backend
 pytest tests -v
 ```
 
-287 test, gồm: validate extension/size, SHA-256, chuẩn hóa address, chống path traversal,
+300 test, gồm: validate extension/size, SHA-256, chuẩn hóa address, chống path traversal,
 risk scoring, chuyển call graph sang JSON, loại bỏ edge trùng, giới hạn depth, giới hạn max nodes,
 thứ tự ưu tiên chọn function để decompile, error envelope, module dynamic analysis (mục 15,
-test qua `FakeDebugBridge`), và một integration test chạy angr thật.
+test qua `FakeDebugBridge` lẫn `Win32DebugBridge` thật trên tiến trình sống), và một integration
+test chạy angr thật.
 
 Test fixture C lành tính nằm ở [`backend/tests/fixtures/sample.c`](backend/tests/fixtures/sample.c).
 Compile bằng MinGW-w64 hoặc Visual Studio:
@@ -526,59 +561,56 @@ hiện tại): xem [`desktop/README.md`](desktop/README.md).
 
 ---
 
-## 15. Debug (dynamic analysis) — hai chế độ: remote (VM cách ly) hoặc chạy trực tiếp
+## 15. Debug (dynamic analysis)
 
 Ngoài phân tích tĩnh (mục 1–14, sample **không bao giờ được thực thi**), có thêm một module
 riêng, tách biệt hoàn toàn: nút **Debug** trên toolbar mở một phiên debug **thật** (breakpoint,
-step, đọc register/stack sống), theo một trong hai chế độ người dùng tự chọn mỗi lần:
+step, đọc/sửa register, xem stack sống) bằng cách **tự thực thi file được chỉ định, ngay trên
+máy đang chạy app** — không qua VM, không cách ly. Mặc định chạy **đúng file vừa upload** (một cú
+click — app tự gửi lại và lưu một bản sao riêng, vì bản gốc đã bị xóa ngay sau khi phân tích tĩnh
+xong); cũng có thể nhập tay đường dẫn tới một file khác.
 
-- **Remote** (khuyến nghị cho mẫu chưa xác định/nghi ngờ): app chỉ kết nối tới `dbgsrv.exe` đã
-  chạy sẵn ở nơi khác — thường là một **VM cách ly người dùng tự chuẩn bị**, nhưng có thể là bất kỳ
-  `host:port` nào (kể cả `127.0.0.1` nếu bạn tự chạy `dbgsrv` ngay trên máy này). App không tự động
-  hoá VM (không start/stop/snapshot, không copy sample vào) — người dùng tự chuẩn bị, tự chạy
-  `dbgsrv`, rồi chỉ nhập `host:port` vào app.
-- **Chạy trực tiếp trên máy này**: app **tự thực thi** file được chỉ định, ngay trên máy đang chạy
-  app — không qua VM, không cách ly. Mặc định chạy **đúng file vừa upload** (một cú click — app tự
-  gửi lại và lưu một bản sao riêng, vì bản gốc đã bị xóa ngay sau khi phân tích tĩnh xong); cũng có
-  thể nhập tay đường dẫn tới một file khác. **Chỉ dùng cho phần mềm bạn hoàn toàn tin cậy** (vd. chính
-  app đang phát triển), **không dùng cho sample chưa xác định**. Đây là ngoại lệ tường minh đối với
-  nguyên tắc "không thực thi binary" ở mục 10 — xem ghi chú ở đó và phần bổ sung "local-launch"
-  trong `docs/dynamic-analysis-spec.md` để biết đầy đủ lý do và giới hạn.
+**Chỉ dùng cho phần mềm bạn hoàn toàn tin cậy** (vd. chính app đang phát triển), **không dùng cho
+sample chưa xác định** — đây là ngoại lệ tường minh đối với nguyên tắc "không thực thi binary" ở
+mục 10, cách ly bằng máy ảo là trách nhiệm của người dùng, app không tự làm việc đó. Xem ghi chú ở
+mục 10 và phần bổ sung "local-launch" trong `docs/dynamic-analysis-spec.md` để biết đầy đủ lý do
+và giới hạn.
 
-Kiến trúc: `backend/app/dynamic/` gọi thẳng `dbgeng.dll` qua `comtypes`/`ctypes` (không phải
-`pykd` — bản PyPI mới nhất không hỗ trợ Python của dự án này, xem `docs/dynamic-analysis-vm-setup.md`).
-Khi debugger dừng ở một địa chỉ runtime, app tự tính lại địa chỉ tĩnh tương ứng (bù trừ ASLR/rebase)
-và tô sáng đúng node trên graph tĩnh đã hiển thị sẵn — cho cả hai chế độ.
+Kiến trúc: `backend/app/dynamic/debug_bridge/win32_debug.py` gọi thẳng Win32 debug API của
+Windows qua `ctypes` (`CreateProcess` + `DEBUG_PROCESS`, `WaitForDebugEvent`/
+`ContinueDebugEvent`, breakpoint phần mềm `INT3` tự cấy/gỡ) — cùng kỹ thuật x64dbg/OllyDbg dùng,
+không phụ thuộc `dbgeng.dll`/`pykd`. Mọi lời gọi được ghim vào đúng một thread nền
+(`ThreadPinnedDebugBridge`) vì Win32 debug API có tính chất thread-affine. Khi debugger dừng ở
+một địa chỉ runtime, app tự tính lại địa chỉ tĩnh tương ứng (bù trừ ASLR/rebase) và tô sáng đúng
+node trên graph tĩnh đã hiển thị sẵn.
 
-Xem hướng dẫn chuẩn bị VM + `dbgsrv` đầy đủ tại
-[`docs/dynamic-analysis-vm-setup.md`](docs/dynamic-analysis-vm-setup.md), và toàn bộ spec/ràng
-buộc an toàn tại [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
+Toàn bộ spec/ràng buộc an toàn: [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
 
 **Tính năng hiện có:**
 
 - **Assembly View**: khi debug session active, panel chính chuyển từ đồ thị sang danh sách
   assembly của function đang chạy, tự highlight và cuộn tới dòng đang thực thi mỗi lần step.
   Nếu PC đang ở module hệ thống (ngoài phạm vi static analyzer, vd. `ntdll`/`kernel32`) thì
-  disassemble trực tiếp từ tiến trình sống thay vì dùng dữ liệu tĩnh.
+  disassemble trực tiếp từ tiến trình sống thay vì dùng dữ liệu tĩnh — breakpoint đặt được ở cả
+  hai trường hợp (địa chỉ tĩnh trong module đang phân tích, hoặc địa chỉ runtime ngoài module đó).
+- **Ctrl+G "go to address"** (kiểu x64dbg) trong Assembly View: nhảy tới dòng đang hiển thị, hoặc
+  gõ một địa chỉ/tên `sub_<hex>` chưa hiển thị — app tự tra function tĩnh chứa địa chỉ đó, tải CFG
+  và chuyển hẳn khung nhìn sang đó, kể cả khi đang xem live-disassembly của module hệ thống.
 - **Register & flags**: đọc và **sửa** giá trị register (x86 và x64) cùng từng bit EFLAGS
   (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — sửa xong, Step Into/Step Over kế tiếp dùng ngay giá trị đã sửa.
-  Đây là bước đầu của giai đoạn 2 (patch-and-continue).
 - **Memory dump**: xem raw byte tại bất kỳ địa chỉ runtime nào (dạng address/hex/ASCII cổ điển),
   không giới hạn trong module đang phân tích.
 - **Rebase địa chỉ hiển thị**: khi có debug session, mọi địa chỉ hiển thị trên UI (Function List,
   đồ thị, CFG, Assembly View) tự động cộng bù ASLR để khớp với địa chỉ runtime thật — dữ liệu gốc
-  dùng cho API/breakpoint vẫn giữ nguyên tọa độ tĩnh.
+  dùng cho API/breakpoint vẫn giữ nguyên tọa độ tĩnh. Export Markdown khi đang debug cũng xuất
+  địa chỉ runtime thật, không phải địa chỉ tĩnh.
 
-**Chưa có / còn hạn chế:** ghi memory tùy ý (`write_memory`), đặt breakpoint tại địa chỉ ngoài
-module đang phân tích (chỉ dump/disassemble được, chưa breakpoint được ở đó), attach theo
-`processName`. Phần lớn các khả năng trên (ngoại trừ attach + liệt kê module ban đầu) **chưa được
-live-test trên target thật** — xem ghi chú chi tiết trong docstring từng phần ở
-`backend/app/dynamic/debug_bridge/client.py`.
+**Chưa có / còn hạn chế:** ghi memory tùy ý (`write_memory` có ở tầng bridge nhưng chưa có
+API/UI), attach theo `processName` thay vì luôn launch mới, step-over/step-into qua ranh giới
+nhiều thread cùng lúc chỉ theo dõi thread hiện hành.
 
-Mục 10 "Lưu ý an toàn" ở trên áp dụng nguyên vẹn cho phần phân tích tĩnh và cho chế độ remote; chế
-độ "chạy trực tiếp" là ngoại lệ tường minh đã ghi rõ ở đó. Modal cảnh báo bắt buộc hiện trước khi mở
-phiên debug (chung, một lần mỗi phiên trang) — và một cảnh báo **riêng, hiện lại mỗi lần**, nghiêm
-trọng hơn, trước khi chọn chế độ "chạy trực tiếp".
+Modal cảnh báo bắt buộc hiện trước khi mở phiên debug (một lần mỗi phiên trang), nhắc rõ đây là
+thực thi thật trên máy hiện tại, không phải sandbox.
 
 ---
 

@@ -2,15 +2,49 @@
 
 [🇻🇳 Tiếng Việt (primary document)](README.md) · 🇬🇧 English · [Security policy](SECURITY.md)
 
-A **static analysis** tool for PE files (`.exe` / `.dll`) that runs entirely locally, rendering
-disassembly results as an interactive, neural-network-style graph.
+A **static + dynamic analysis** tool for PE files (`.exe` / `.dll`) that runs entirely locally,
+turning disassembly into an interactive, neural-network-style graph — and into a compact
+Markdown report **built to be pasted straight into ChatGPT/Claude**, instead of forcing you to
+hand-copy thousands of lines of disassembly.
+
+### 🤖 Why this pairs well with AI-assisted PE analysis
+
+Handing an AI the raw `.exe` doesn't work — it can't execute a binary, and it can't disassemble
+one either. Pasting a raw angr/IDA/Ghidra dump into a chat doesn't work well either — a
+mid-sized binary can have thousands of functions, blowing past any context window instantly, and
+the AI ends up guessing which unordered blob of JSON matters.
+
+This tool sits in between:
+
+```mermaid
+flowchart LR
+    A["Upload .exe/.dll"] --> B["angr CFGFast<br/>disassemble + risk score"]
+    B --> C["Export Markdown button<br/>compact · risk-ranked · hard caps"]
+    C --> D["Paste into ChatGPT / Claude / ..."]
+    D --> E["Ask: what does this function do?<br/>is this process injection?<br/>explain this API call chain"]
+```
+
+- **Risk score ranks functions up front** so the AI isn't guessing which of thousands of
+  functions to look at first.
+- **Every table has a hard cap** (risk rows, edges, functions with pseudocode) — nothing gets
+  silently truncated; whatever is cut is reported with an exact count.
+- **The exported report is in English**, even though the rest of the app is Vietnamese — it
+  tokenizes far more efficiently for most models than the raw JSON dump would.
+- **No API key, no AI call happens inside the app.** This isn't a hidden "AI integration" that
+  phones out on your behalf — it only prepares clean data; you paste it into whichever AI tool
+  you choose, yourself. Nothing leaves your machine except the exact text you copy.
+- The full graph/CFG/pseudocode is still browsable directly in the UI — the Markdown export is a
+  shortcut for AI, not a replacement for looking at the data yourself.
+
+Export format details: [section 8](#markdown-export-format).
 
 > **Safety:** this tool **never executes** the sample. Binaries are only ever read as data and
 > disassembled by angr. No sandbox, no emulator, no file/hash sent to the Internet. The backend
 > (`backend/app/`) never uses `subprocess` — a unit test enforces this as a regression guard. The
 > desktop build ([section 13](#13-desktop-build-no-install-required)) is the one exception: it uses
 > `subprocess` in exactly one place, in a launcher *outside* `backend/app/`, and only to start its
-> own bundled Python — it never touches the sample file.
+> own bundled Python — it never touches the sample file. The Debug feature
+> ([section 15](#15-debug-dynamic-analysis)) is a separate, explicit exception — see the note there.
 
 ---
 
@@ -27,7 +61,9 @@ in three views:
 | **API Graph** | Function → Imported API (bipartite, one node per API) |
 
 Besides the graph, the tool extracts: entry point, function list, imported APIs (with DLL),
-strings, and a **heuristic risk score** to help prioritise analysis.
+strings, and a **heuristic risk score** to help prioritise analysis. Need to go deeper than static
+analysis? Open a **real debug session** (breakpoints, stepping, read/edit registers, live
+assembly) — see [section 15](#15-debug-dynamic-analysis).
 
 > The risk score is a heuristic to prioritise analysis, **not a malware detection verdict**.
 
@@ -104,7 +140,7 @@ binary-graph-analyzer/
 │   │   └── utils/
 │   │       ├── address.py             Address normalisation, node ids
 │   │       └── security.py            Validation, hashing, temp files
-│   ├── tests/                         287 tests
+│   ├── tests/                         300 tests
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -433,10 +469,11 @@ cd backend
 pytest tests -v
 ```
 
-287 tests, covering: extension/size validation, SHA-256, address normalisation, path-traversal
+300 tests, covering: extension/size validation, SHA-256, address normalisation, path-traversal
 protection, risk scoring, call-graph-to-JSON conversion, duplicate-edge removal, depth limiting,
 max-node limiting, decompile-priority ordering, the error envelope, the dynamic analysis module
-(section 15, tested via `FakeDebugBridge`), and one integration test that runs angr for real.
+(section 15, tested via `FakeDebugBridge` as well as a real `Win32DebugBridge` against live
+processes), and one integration test that runs angr for real.
 
 A benign C test fixture lives at
 [`backend/tests/fixtures/sample.c`](backend/tests/fixtures/sample.c). Compile it with MinGW-w64 or
@@ -542,36 +579,32 @@ limitations): see [`desktop/README.md`](desktop/README.md).
 
 ---
 
-## 15. Debug (dynamic analysis) — two modes: remote (isolated VM) or run directly
+## 15. Debug (dynamic analysis)
 
 Beyond static analysis (sections 1–14, where the sample is **never executed**), there is a
 completely separate module: the **Debug** button on the toolbar opens a **real** debug session
-(breakpoints, stepping, live register/stack reads), in one of two modes the user picks each time:
+(breakpoints, stepping, live/editable registers, live stack reads) by **executing the specified
+file itself, directly on the machine running the app** — no VM, no isolation. By default it runs
+**the exact file you just uploaded** (one click — the app re-sends and keeps its own separate
+copy, since the original was already deleted right after static analysis finished); a path to a
+different file can also be typed in manually.
 
-- **Remote** (recommended for unidentified/suspicious samples): the app only connects to a
-  `dbgsrv.exe` already running elsewhere — typically an **isolated VM the user prepares
-  themselves**, but it can be any `host:port` (including `127.0.0.1` if you run `dbgsrv` on this
-  same machine yourself). The app never automates the VM (no start/stop/snapshot, no copying the
-  sample in) — the user prepares it, runs `dbgsrv` themselves, then just types `host:port` into the
-  app.
-- **Run directly on this machine**: the app **executes the specified file itself**, directly on the
-  machine running the app — no VM, no isolation. By default it runs **the exact file you just
-  uploaded** (one click — the app re-sends and keeps its own separate copy, since the original was
-  already deleted right after static analysis finished); a path to a different file can also be
-  typed in manually. **Only use this for software you fully trust** (e.g. this app itself during
-  development), **never for an unidentified sample**. This is an explicit, documented exception to
-  the "never executes the binary" rule in section 10 — see the note there and the "local-launch"
-  addendum in `docs/dynamic-analysis-spec.md` for the full rationale and limits.
+**Only use this for software you fully trust** (e.g. this app itself during development), **never
+for an unidentified sample** — this is an explicit, documented exception to the "never executes
+the binary" rule in section 10; isolating via a VM is the user's own responsibility, the app does
+not do it automatically. See the note in section 10 and the "local-launch" addendum in
+`docs/dynamic-analysis-spec.md` for the full rationale and limits.
 
-Architecture: `backend/app/dynamic/` talks straight to `dbgeng.dll` via `comtypes`/`ctypes` (not
-`pykd` — its newest PyPI release does not support this project's Python version, see
-`docs/dynamic-analysis-vm-setup.md`). When the debugger stops at a runtime address, the app
-recomputes the corresponding static address (compensating for ASLR/rebase) and highlights the
-matching node on the already-rendered static graph — for both modes.
+Architecture: `backend/app/dynamic/debug_bridge/win32_debug.py` talks straight to the Windows
+Win32 debug API via `ctypes` (`CreateProcess` + `DEBUG_PROCESS`, `WaitForDebugEvent`/
+`ContinueDebugEvent`, self-managed software `INT3` breakpoints) — the same technique x64dbg/
+OllyDbg use, no dependency on `dbgeng.dll`/`pykd`. Every call is pinned to one dedicated
+background thread (`ThreadPinnedDebugBridge`), since the Win32 debug API is thread-affine. When
+the debugger stops at a runtime address, the app recomputes the corresponding static address
+(compensating for ASLR/rebase) and highlights the matching node on the already-rendered static
+graph.
 
-See the full VM + `dbgsrv` setup guide at
-[`docs/dynamic-analysis-vm-setup.md`](docs/dynamic-analysis-vm-setup.md), and the complete spec/
-safety constraints at [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
+Full spec/safety constraints: [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
 
 **Current capabilities:**
 
@@ -579,28 +612,29 @@ safety constraints at [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-sp
   linear assembly listing of the currently-running function, auto-highlighting and auto-scrolling
   to the executing line on every step. If the PC is in a system module (outside the static
   analyzer's coverage, e.g. `ntdll`/`kernel32`), it disassembles live from the running process
-  instead of using static data.
+  instead of using static data — breakpoints work in both cases (a static address inside the
+  analysed module, or a runtime address outside it).
+- **Ctrl+G "go to address"** (x64dbg-style) in Assembly View: jumps to a row already on screen, or
+  type an address/`sub_<hex>` name not currently shown — the app looks up whichever static
+  function contains it, fetches its CFG, and switches the view to it, even while currently looking
+  at live disassembly of a system module.
 - **Registers & flags**: read and **edit** register values (x86 and x64) and individual EFLAGS bits
   (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — after editing, the next Step Into/Step Over uses the edited value
-  immediately. This is the first piece of phase 2 (patch-and-continue).
+  immediately.
 - **Memory dump**: view raw bytes at any runtime address (classic address/hex/ASCII layout), not
   limited to the analysed module.
 - **Display address rebasing**: while a debug session is active, every address shown in the UI
   (Function List, graphs, CFG, Assembly View) is automatically offset to match the real runtime
   address (ASLR-compensated) — the underlying data used for API calls/breakpoints still uses the
-  static coordinate space unchanged.
+  static coordinate space unchanged. Markdown export while debugging also shows real runtime
+  addresses, not static ones.
 
-**Not yet available / still limited:** writing arbitrary memory (`write_memory`), setting a
-breakpoint at an address outside the analysed module (dump/disassemble works there, breakpoints do
-not yet), attaching by `processName`. Most of the capabilities above (aside from the original
-attach + initial module enumeration) **have not been live-tested against a real target** — see the
-detailed notes in each section's docstring in
-`backend/app/dynamic/debug_bridge/client.py`.
+**Not yet available / still limited:** writing arbitrary memory (`write_memory` exists at the
+bridge layer but has no API/UI yet), attaching by `processName` instead of always launching fresh,
+stepping across more than one thread at once (only the current thread is followed).
 
-Section 10's safety notes above apply unchanged to the static analyzer and to remote mode; the
-"run directly" mode is the explicit, documented exception noted there. A mandatory warning modal
-shows before any debug session opens (shared, once per page session) — and a **separate warning
-that shows every time**, more severe, before selecting "run directly" mode.
+A mandatory warning modal shows before any debug session opens (once per page session), making
+clear this is real execution on the current machine, not a sandbox.
 
 ---
 

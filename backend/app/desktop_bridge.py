@@ -211,6 +211,17 @@ class DesktopApi:
             return _not_found_function(address)
         return _dump(detail)
 
+    def decompile_all_functions(self, analysis_id: str) -> dict[str, Any]:
+        """Same as the web deployment's `POST .../decompile-all` - decompiles
+        every function still lacking pseudocode, best-effort, no time budget.
+        Can take minutes on a binary with many non-trivial functions; the
+        frontend is expected to show its own loading state around this call.
+        """
+        try:
+            return self._service.decompile_all_functions(analysis_id)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+
     def get_function_cfg(self, analysis_id: str, address: str) -> dict[str, Any]:
         try:
             graph = self._service.get_function_cfg(analysis_id, address)
@@ -287,6 +298,18 @@ class DesktopApi:
         except AnalysisNotFound:
             return _not_found(analysis_id)
         return {"filename": f"analysis-{analysis_id[:8]}.md", "content": markdown}
+
+    def export_markdown_full(self, analysis_id: str) -> dict[str, Any]:
+        """Same compact-report format as `export_markdown`, except the
+        Function Detail section covers every function that currently has
+        pseudocode rather than a risk-curated top-25 - call
+        `decompile_all_functions` first to fill in as much of the binary as
+        possible before calling this."""
+        try:
+            markdown = self._service.export_markdown_full(analysis_id)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+        return {"filename": f"analysis-{analysis_id[:8]}-full.md", "content": markdown}
 
     def delete_analysis(self, analysis_id: str) -> dict[str, Any]:
         return {"deleted": self._service.delete(analysis_id)}

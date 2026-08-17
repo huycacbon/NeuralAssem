@@ -41,6 +41,15 @@ export class ApiError extends Error {
   }
 }
 
+/** Result of `analysisApi.decompileAll` - see its docstring. */
+export interface DecompileAllResult {
+  total: number;
+  alreadyAvailable: number;
+  decompiled: number;
+  failed: number;
+  skippedNotApplicable: number;
+}
+
 function isErrorEnvelope(value: unknown): value is { error: ApiErrorDetail } {
   if (typeof value !== 'object' || value === null || !('error' in value)) {
     return false;
@@ -84,6 +93,8 @@ interface DesktopBridge {
   get_strings(analysisId: string, limit: number, search: string | null): Promise<unknown>;
   expand(analysisId: string, address: string, maxNodes: number): Promise<unknown>;
   export_markdown(analysisId: string): Promise<unknown>;
+  decompile_all_functions(analysisId: string): Promise<unknown>;
+  export_markdown_full(analysisId: string): Promise<unknown>;
   delete_analysis(analysisId: string): Promise<unknown>;
 }
 
@@ -507,6 +518,64 @@ export const analysisApi = {
     const content = await response.text();
     return {
       filename: `analysis-${analysisId.slice(0, 8)}.md`,
+      content: rebaseExportedAddresses(content, rebaseDelta),
+    };
+  },
+
+  /**
+   * Decompile every function that still lacks pseudocode, best-effort, no
+   * count/time budget - unlike the eager pass at analysis time, this exists
+   * specifically to prepare for `exportMarkdownFull`. Can take from seconds
+   * to several minutes depending on the binary; callers are expected to show
+   * their own loading state around this (see `App.tsx`'s `handleExportFull`).
+   */
+  async decompileAll(analysisId: string): Promise<DecompileAllResult> {
+    if (isDesktop()) {
+      return callBridge(async () => (await getBridge()).decompile_all_functions(analysisId));
+    }
+    const response = await fetch(
+      `${API_BASE_URL}/api/analysis/${analysisId}/decompile-all`,
+      { method: 'POST' },
+    );
+    return handle<DecompileAllResult>(response);
+  },
+
+  /**
+   * Same report as `exportMarkdown`, except the Function Detail section
+   * covers every function that currently has pseudocode, not a risk-curated
+   * top-25 - the "export everything" counterpart. Does not decompile
+   * anything itself; call `decompileAll` first to fill in as much of the
+   * binary as possible. Same `rebaseDelta` handling as `exportMarkdown`.
+   */
+  async exportMarkdownFull(
+    analysisId: string,
+    rebaseDelta?: number | null,
+  ): Promise<{ filename: string; content: string }> {
+    if (isDesktop()) {
+      const result = await callBridge<{ filename: string; content: string }>(async () =>
+        (await getBridge()).export_markdown_full(analysisId),
+      );
+      return { ...result, content: rebaseExportedAddresses(result.content, rebaseDelta) };
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}/api/analysis/${analysisId}/export-full.md`);
+    } catch (error) {
+      throw new ApiError(
+        {
+          code: 'NETWORK_ERROR',
+          message: 'Không kết nối được tới backend',
+          details: `Kiểm tra backend đang chạy tại ${API_BASE_URL || window.location.origin}`,
+        },
+        0,
+      );
+    }
+    if (!response.ok) {
+      await handle(response); // throws the structured ApiError
+    }
+    const content = await response.text();
+    return {
+      filename: `analysis-${analysisId.slice(0, 8)}-full.md`,
       content: rebaseExportedAddresses(content, rebaseDelta),
     };
   },

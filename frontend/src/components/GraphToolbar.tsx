@@ -20,6 +20,13 @@ interface GraphToolbarProps {
   onFit: () => void;
   onResetView: () => void;
   onExport: () => void;
+  /** Decompiles every remaining function (no cap, can take minutes) then
+   *  downloads a Markdown report covering all of them - the "export
+   *  everything" counterpart to `onExport`'s risk-curated, LLM-sized report.
+   *  `exportingFull` disables the button and swaps its label while running,
+   *  since a single click can block for a long time on a large binary. */
+  onExportFull: () => void;
+  exportingFull: boolean;
   /** True once a debug session is already open - relabels the button so the
    *  user knows clicking it reopens the live panel rather than starting over. */
   debugSessionActive: boolean;
@@ -48,6 +55,8 @@ export function GraphToolbar({
   onFit,
   onResetView,
   onExport,
+  onExportFull,
+  exportingFull,
   debugSessionActive,
   onDebugClick,
   debugViewMode,
@@ -178,6 +187,14 @@ export function GraphToolbar({
           title="Xuất báo cáo Markdown gọn — phù hợp dán vào AI hoặc gửi cho đồng nghiệp"
         >
           Xuất Markdown
+        </button>
+        <button
+          type="button"
+          disabled={!analysisReady || exportingFull}
+          onClick={onExportFull}
+          title="Decompile toàn bộ hàm còn thiếu rồi xuất pseudocode của TẤT CẢ hàm — có thể mất vài phút với binary lớn, không giới hạn 25 hàm như Xuất Markdown"
+        >
+          {exportingFull ? 'Đang decompile toàn bộ…' : 'Xuất tất cả (decompile hết)'}
         </button>
         <button
           type="button"

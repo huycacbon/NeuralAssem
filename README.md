@@ -268,6 +268,13 @@ Mở <http://127.0.0.1:5173>. API docs tại <http://127.0.0.1:8000/docs>.
    theo risk score, import theo capability, call graph dạng edge-list, và pseudocode/lý do risk
    cho các function đáng chú ý. Thiết kế để dán thẳng vào chat với AI hoặc gửi cho đồng nghiệp
    không cài tool này; không phải dump toàn bộ dữ liệu thô — xem mục 8.
+8. **Xuất tất cả (decompile hết)**: nút cạnh bên — chủ động decompile mọi function còn thiếu
+   pseudocode (không giới hạn số lượng như bước tự động lúc phân tích), rồi tải về một báo cáo
+   `.md` khác liệt kê pseudocode của **mọi** function đã decompile được, không chỉ top 25 theo
+   risk. Vì decompile từng function có thể tốn tới hàng chục giây, thao tác này có thể mất vài
+   phút với binary nhiều function — nút tự vô hiệu hoá và đổi nhãn trong lúc chạy. Phù hợp khi
+   cần một bản dump đầy đủ (đọc thủ công, lưu trữ, hoặc đưa vào một tool khác) hơn là một báo
+   cáo gọn để dán vào AI — xem mục 8.
 
 ### Bộ lọc
 
@@ -295,12 +302,14 @@ Bộ lọc **không xóa dữ liệu gốc** — chỉ thay đổi phần tử �
 | `GET` | `/api/analysis/{id}/functions/{addr}` | Chi tiết một function |
 | `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | CFG của function (lazy, kèm instruction) |
 | `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | Decompile on-demand (angr), no-op nếu đã có sẵn |
+| `POST` | `/api/analysis/{id}/decompile-all` | Decompile mọi function còn thiếu, không giới hạn (có thể mất vài phút) |
 | `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
 | `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |
 | `GET` | `/api/analysis/{id}/imports` | Imported API kèm DLL và callers |
 | `GET` | `/api/analysis/{id}/strings` | Strings — `limit`, `search` |
 | `GET` | `/api/analysis/{id}/expand/{addr}` | Neighborhood một hop của function |
 | `GET` | `/api/analysis/{id}/export.md` | Báo cáo Markdown gọn (xem mục 7, bước 7) |
+| `GET` | `/api/analysis/{id}/export-full.md` | Như trên, nhưng pseudocode của **mọi** function (xem mục 7, bước 8) |
 | `DELETE` | `/api/analysis/{id}` | Xóa kết quả khỏi bộ nhớ |
 
 Địa chỉ trong URL chấp nhận cả `0x401000` lẫn `401000`.
@@ -321,6 +330,13 @@ việc dán vào chat với AI hoặc gửi cho người không cài tool này, 
   cho hầu hết model AI, và đây là mục tiêu chính của định dạng này.
 - Có giới hạn cứng (số hàng bảng risk, số edge, số function có pseudocode) — phần bị cắt luôn ghi
   rõ số lượng bị bỏ qua, không im lặng biến mất.
+
+`/export-full.md` dùng chung header/risk table/imports/call graph, nhưng phần pseudocode liệt kê
+**mọi** function đang có sẵn (không giới hạn 25 hàm, không lọc theo risk) — function chưa/không
+decompile được liệt kê gọn trong một bảng cuối kèm lý do, thay vì bị bỏ qua. Không tự decompile gì
+cả — gọi `/decompile-all` trước để có nhiều pseudocode nhất có thể. Có thể ra file lớn hơn hẳn
+`/export.md` với binary nhiều function không tầm thường; đây là chủ đích, không phải giới hạn cần
+sửa — mục tiêu của biến thể này là đầy đủ, không phải gọn cho AI.
 
 ### Schema graph
 

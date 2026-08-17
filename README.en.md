@@ -272,6 +272,13 @@ Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
    edge-list, and pseudocode/risk reasons for notable functions. Designed to be pasted straight
    into an AI chat or sent to a colleague without this tool installed; it is not a raw data dump —
    see section 8.
+8. **Export all (decompile everything)**: the button next to it — actively decompiles every
+   function still missing pseudocode (no cap, unlike the bounded automatic pass at analysis time),
+   then downloads a separate `.md` report listing pseudocode for **every** decompiled function, not
+   just the top 25 by risk. Since decompiling one function can take tens of seconds, this can take
+   several minutes on a binary with many functions — the button disables itself and changes its
+   label while running. Useful when you want a complete dump (to read manually, archive, or feed
+   into another tool) rather than a compact report meant for pasting into an AI — see section 8.
 
 ### Filters
 
@@ -299,12 +306,14 @@ Filters **never delete the underlying data** — they only change what is curren
 | `GET` | `/api/analysis/{id}/functions/{addr}` | One function's details |
 | `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | Function CFG (lazy, with instructions) |
 | `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | On-demand decompile (angr), no-op if already done |
+| `POST` | `/api/analysis/{id}/decompile-all` | Decompile every remaining function, no cap (can take minutes) |
 | `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
 | `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |
 | `GET` | `/api/analysis/{id}/imports` | Imported APIs with DLL and callers |
 | `GET` | `/api/analysis/{id}/strings` | Strings — `limit`, `search` |
 | `GET` | `/api/analysis/{id}/expand/{addr}` | One-hop neighbourhood of a function |
 | `GET` | `/api/analysis/{id}/export.md` | Compact Markdown report (see section 7, step 7) |
+| `GET` | `/api/analysis/{id}/export-full.md` | Same, but pseudocode for **every** function (see section 7, step 8) |
 | `DELETE` | `/api/analysis/{id}` | Delete a result from memory |
 
 Addresses in URLs accept both `0x401000` and `401000`.
@@ -326,6 +335,14 @@ pasting into an AI chat or sending to someone without this tool, **not** a full 
   tokenises more compactly for most AI models, which is this format's whole point.
 - Hard caps everywhere (risk-table rows, edges, functions with pseudocode) — anything truncated is
   always reported with a count, never silently dropped.
+
+`/export-full.md` shares the same header/risk table/imports/call graph, but its pseudocode section
+lists **every** function that currently has it (no 25-function cap, no risk filter) — a function
+that isn't decompiled (yet, or at all) is listed in a compact table at the end with the reason,
+instead of being dropped. It does not decompile anything itself — call `/decompile-all` first to
+get as much pseudocode as possible. Can produce a much larger file than `/export.md` for a binary
+with many non-trivial functions - that is the intent, not a bug to fix; this variant's goal is
+completeness, not staying small enough for an AI chat.
 
 ### Graph schema
 

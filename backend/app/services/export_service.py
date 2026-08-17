@@ -19,6 +19,7 @@ Design goals, in priority order:
 from __future__ import annotations
 
 from app.models.analysis import AnalysisRecord, FunctionDetail
+from app.utils.address import try_parse_address
 
 #: Hard caps so one huge binary cannot produce an unbounded document.
 MAX_RISK_TABLE_ROWS = 40
@@ -26,6 +27,12 @@ MAX_CALL_GRAPH_EDGES = 150
 MAX_CODE_APPENDIX_FUNCTIONS = 25
 MAX_CODE_LINES_PER_FUNCTION = 120
 MAX_STRINGS_PER_FUNCTION = 15
+
+#: `build_full_markdown_export`'s per-function cap - far more generous than
+#: `MAX_CODE_LINES_PER_FUNCTION` since completeness is the entire point of
+#: that variant, but still bounded so one pathological decompile (an
+#: unrolled/obfuscated function) cannot blow the document up unboundedly.
+MAX_FULL_CODE_LINES_PER_FUNCTION = 2000
 
 #: English throughout this module, deliberately - the export exists specifically
 #: to be fed to an LLM efficiently, and English tokenizes more compactly than
@@ -239,6 +246,103 @@ def _code_appendix(record: AnalysisRecord) -> str:
         lines.append(f"*({omitted} more function(s) with risk signal omitted from this appendix.)*")
 
     return "\n".join(lines)
+
+
+def _full_code_appendix(record: AnalysisRecord) -> str:
+    """Pseudocode for *every* function that has it - the exhaustive
+    counterpart to `_code_appendix`'s curated top-N. Meant to be called after
+    `AnalysisService.decompile_all_functions` has had a chance to fill in
+    whatever the eager/on-demand passes had skipped; this function never
+    triggers decompilation itself, it only reports whatever is already on
+    `record.functions` at call time - a function still missing pseudocode
+    (decompiler genuinely failed on it, or it has no code at all - an import
+    thunk/stub) is listed with its reason in a compact table at the end
+    instead of getting its own section, so hundreds of one-liners for thunks
+    don't dwarf the functions that actually have something to read.
+    """
+    functions = sorted(
+        record.functions.values(), key=lambda fn: try_parse_address(fn.address) or 0
+    )
+    with_code = [fn for fn in functions if fn.pseudocode_status == "available" and fn.pseudocode]
+    without_code = [
+        fn for fn in functions if not (fn.pseudocode_status == "available" and fn.pseudocode)
+    ]
+
+    if not functions:
+        return ""
+
+    lines = [
+        "## Function Detail (full)",
+        "",
+        "Pseudocode is heuristic output from angr's decompiler - may not match the "
+        "original source exactly. Every function is listed in address order.",
+        "",
+        f"{len(with_code)}/{len(functions)} function(s) have pseudocode below; "
+        f"{len(without_code)} do not (listed with the reason in the table at the end).",
+        "",
+    ]
+
+    for fn in with_code:
+        marker = " (entry point)" if fn.is_entry_point else ""
+        lines.append(f"### {fn.name}{marker}")
+        lines.append("")
+        lines.append(
+            f"`{fn.address}` | risk {fn.risk_score} | "
+            f"{fn.caller_count} caller(s), {fn.callee_count} callee(s), {fn.block_count} block(s)"
+        )
+        if fn.risk_reasons:
+            lines.append(f"Risk reasons: {'; '.join(fn.risk_reasons)}")
+        if fn.imported_apis:
+            lines.append(f"Calls: {', '.join(fn.imported_apis)}")
+        if fn.strings:
+            values = [item.value for item in fn.strings[:MAX_STRINGS_PER_FUNCTION]]
+            lines.append(f"Referenced strings: {', '.join(values)}")
+
+        lines.append("")
+        code, was_truncated = _truncate_code(fn.pseudocode, MAX_FULL_CODE_LINES_PER_FUNCTION)
+        lines.append("```c")
+        lines.append(code)
+        lines.append("```")
+        if was_truncated:
+            lines.append(
+                f"*(pseudocode truncated at {MAX_FULL_CODE_LINES_PER_FUNCTION} lines - "
+                "see UI for the full function.)*"
+            )
+        lines.append("")
+
+    if without_code:
+        lines.append("### Functions without pseudocode")
+        lines.append("")
+        lines.append("| Function | Address | Reason |")
+        lines.append("|---|---|---|")
+        for fn in without_code:
+            reason = fn.pseudocode_note or fn.pseudocode_status
+            lines.append(f"| {fn.name} | `{fn.address}` | {reason} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def build_full_markdown_export(record: AnalysisRecord) -> str:
+    """Same report as `build_markdown_export`, except the Function Detail
+    section covers *every* function, not just a risk-curated top-25 - the
+    "export everything" counterpart, meant to be paired with
+    `AnalysisService.decompile_all_functions` (call that first so as many
+    functions as possible already have pseudocode by the time this runs).
+
+    Can produce a genuinely large document for a binary with hundreds of
+    non-trivial functions - that is the explicit point of this variant, unlike
+    `build_markdown_export`, which is deliberately capped to stay small enough
+    to paste into an LLM chat (see its own docstring).
+    """
+    sections = [
+        _header(record),
+        _risk_table(record),
+        _imports_section(record),
+        _call_graph_section(record),
+        _full_code_appendix(record),
+    ]
+    return "\n\n---\n\n".join(section for section in sections if section)
 
 
 def build_markdown_export(record: AnalysisRecord) -> str:

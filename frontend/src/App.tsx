@@ -52,6 +52,21 @@ function parseHexAddress(address: string | null | undefined): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
+/** Shared by `handleExport`/`handleExportFull` - Blob + object URL works
+ *  identically whether `content` came over HTTP or straight from the desktop
+ *  bridge, no server-sent `Content-Disposition` needed either way. */
+function downloadTextFile(filename: string, content: string): void {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 /** How many instructions `debugFunctionCfg` should carry before the debug
  *  assembly view (`AssemblyView`) is considered "full enough" - short
  *  functions (the common case for hand-written stubs, thunks, tiny
@@ -118,6 +133,9 @@ export default function App(): JSX.Element {
   // In-memory only, resets on reload - the mandatory warning modal (safety
   // constraint #6) shows once per page session, never persisted to disk.
   const [debugWarningAcknowledged, setDebugWarningAcknowledged] = useState(false);
+  // Drives the "Xuất tất cả (decompile hết)" button's disabled/label state -
+  // see `handleExportFull`, which can block for minutes on a large binary.
+  const [exportingFull, setExportingFull] = useState(false);
   const [executingNodeId, setExecutingNodeId] = useState<string | null>(null);
   // Which view fills the centre column while a debug session is active - the
   // graph is replaced by a live-highlighted assembly listing by default (per
@@ -874,22 +892,40 @@ export default function App(): JSX.Element {
       // rather than the static one - same rebase already applied to
       // on-screen addresses elsewhere (see `rebaseDelta`'s docstring above).
       const { filename, content } = await analysisApi.exportMarkdown(analysis.analysisId, rebaseDelta);
-      // Blob + object URL works identically whether `content` came over HTTP
-      // or straight from the desktop bridge - no server-sent
-      // Content-Disposition needed either way.
-      const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadTextFile(filename, content);
     } catch (error) {
       if (error instanceof ApiError) addBanner(error.message, 'error');
     }
   }, [analysis, addBanner, rebaseDelta]);
+
+  const handleExportFull = useCallback(async () => {
+    if (!analysis || exportingFull) return;
+    setExportingFull(true);
+    try {
+      // Unlike `handleExport`, this first triggers decompiling every
+      // function that still lacks pseudocode (no cap, can take from seconds
+      // to several minutes on a large binary) so the export afterwards
+      // covers as much of the binary as possible - see
+      // `analysisApi.decompileAll`'s docstring.
+      addBanner('Đang decompile toàn bộ hàm còn thiếu — có thể mất vài phút với binary lớn...', 'warn');
+      const counts = await analysisApi.decompileAll(analysis.analysisId);
+      addBanner(
+        `Decompile xong: ${counts.decompiled} hàm mới, ${counts.alreadyAvailable} đã có sẵn, ` +
+          `${counts.failed} thất bại, ${counts.skippedNotApplicable} không áp dụng được ` +
+          `(import thunk/stub). Đang xuất file...`,
+        'warn',
+      );
+      const { filename, content } = await analysisApi.exportMarkdownFull(
+        analysis.analysisId,
+        rebaseDelta,
+      );
+      downloadTextFile(filename, content);
+    } catch (error) {
+      if (error instanceof ApiError) addBanner(error.message, 'error');
+    } finally {
+      setExportingFull(false);
+    }
+  }, [analysis, addBanner, rebaseDelta, exportingFull]);
 
   const statusText = useMemo(() => {
     if (stage === 'failed') return 'Phân tích thất bại';
@@ -928,6 +964,8 @@ export default function App(): JSX.Element {
         onFit={() => viewerRef.current?.fit()}
         onResetView={handleResetView}
         onExport={handleExport}
+        onExportFull={() => void handleExportFull()}
+        exportingFull={exportingFull}
         debugSessionActive={debug.session !== null}
         onDebugClick={handleDebugClick}
         debugViewMode={debugViewMode}

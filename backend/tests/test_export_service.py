@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from app.analyzers.angr_analyzer import AnalysisArtifacts
 from app.services.analysis_service import _build_record
-from app.services.export_service import RISK_DISCLAIMER, build_markdown_export
+from app.services.export_service import (
+    RISK_DISCLAIMER,
+    build_full_markdown_export,
+    build_markdown_export,
+)
 from tests.conftest import make_function
 
 
@@ -134,6 +138,71 @@ class TestCodeAppendix:
         markdown = build_markdown_export(_record(artifacts))
         assert "```c" in markdown
         assert "return 0;" in markdown
+
+
+class TestFullCodeAppendix:
+    """`build_full_markdown_export` - the uncapped "export everything"
+    counterpart to `build_markdown_export`'s risk-curated top-25."""
+
+    def test_every_function_with_pseudocode_is_included_not_just_risky_ones(self) -> None:
+        # `add`: risk 0, not the entry point - `build_markdown_export` leaves
+        # it out entirely (see TestCodeAppendix.test_excludes_zero_risk...
+        # above). The full export must still include it once it has code.
+        add = make_function(0x401200, "add", callers={0x401100})
+        add.pseudocode = "int add(int a, int b) { return a + b; }"
+        add.pseudocode_status = "available"
+        artifacts = AnalysisArtifacts(
+            architecture="x86",
+            bits=32,
+            entry_point=0x401000,
+            image_base=0x400000,
+            binary_format="PE",
+            functions={0x401000: make_function(0x401000, "main"), 0x401200: add},
+        )
+        markdown = build_full_markdown_export(_record(artifacts))
+        assert "### add" in markdown
+        assert "return a + b;" in markdown
+
+    def test_functions_without_pseudocode_are_listed_with_a_reason_not_silently_dropped(
+        self,
+    ) -> None:
+        failed = make_function(0x401200, "sub_401200")
+        failed.pseudocode_status = "failed"
+        failed.pseudocode_note = "Decompiler lỗi: giả lập"
+        artifacts = AnalysisArtifacts(
+            architecture="x86",
+            bits=32,
+            entry_point=0x401000,
+            image_base=0x400000,
+            binary_format="PE",
+            functions={0x401000: make_function(0x401000, "main"), 0x401200: failed},
+        )
+        markdown = build_full_markdown_export(_record(artifacts))
+        table_section = markdown.split("### Functions without pseudocode")[1]
+        assert "sub_401200" in table_section
+        assert "Decompiler lỗi: giả lập" in table_section
+
+    def test_no_curated_top_n_cap_on_a_wide_binary(self) -> None:
+        root = make_function(0x401000, "main")
+        leaves = {}
+        for index in range(60):
+            address = 0x402000 + index * 0x10
+            fn = make_function(address, f"sub_{address:x}", callers={0x401000})
+            fn.pseudocode = f"void sub_{address:x}(void) {{}}"
+            fn.pseudocode_status = "available"
+            leaves[address] = fn
+        artifacts = AnalysisArtifacts(
+            architecture="x86",
+            bits=32,
+            entry_point=0x401000,
+            image_base=0x400000,
+            binary_format="PE",
+            functions={0x401000: root, **leaves},
+        )
+        markdown = build_full_markdown_export(_record(artifacts))
+        # `build_markdown_export`'s MAX_CODE_APPENDIX_FUNCTIONS (25) would cap
+        # this well below 60 - the full export must not.
+        assert markdown.count("### sub_") == 60
 
 
 class TestRobustness:

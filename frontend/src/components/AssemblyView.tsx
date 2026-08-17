@@ -55,6 +55,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import type { DebugBreakpoint, DebugSessionStatus, LiveDisassemblyResponse } from '@/types/debug';
 import type { Graph, Instruction } from '@/types/graph';
 import { displayAddress } from '@/utils/addressDisplay';
@@ -142,6 +143,7 @@ export function AssemblyView({
   externalJumpTarget,
   onExternalJumpConsumed,
 }: AssemblyViewProps): JSX.Element {
+  const { openCopyMenu } = useCopyMenu();
   const activeRowRef = useRef<HTMLDivElement | null>(null);
   // Keyed by each row's raw numeric address (`insn.numericAddress`, never
   // the rebased display value) - populated via each row's own ref callback
@@ -387,7 +389,12 @@ export function AssemblyView({
               return (
                 <div key={`${insn.address}-${index}`}>
                   {insn.isBlockStart && (
-                    <div className="disasm-block-header">
+                    <div
+                      className="disasm-block-header"
+                      onContextMenu={(event) =>
+                        openCopyMenu(event, [{ label: 'tên/label block', value: shownBlockLabel }])
+                      }
+                    >
                       {shownBlockLabel}
                       {insn.isFunctionStart ? ' · entry' : ''}
                     </div>
@@ -400,8 +407,17 @@ export function AssemblyView({
                       }
                     }}
                     className={`disasm-row assembly-row${isCurrent ? ' assembly-row-current' : ''}${isJumpTarget ? ' assembly-row-jumped' : ''}`}
-                    title="Double-click để đặt/xóa breakpoint tại dòng này"
+                    title="Double-click để đặt/xóa breakpoint tại dòng này · Chuột phải để copy"
                     onDoubleClick={breakpointsDisabled ? undefined : toggleBreakpoint}
+                    onContextMenu={(event) =>
+                      openCopyMenu(event, [
+                        { label: 'địa chỉ', value: shownAddress },
+                        {
+                          label: 'dòng lệnh',
+                          value: `${shownAddress}  ${insn.mnemonic} ${insn.operands}`.trim(),
+                        },
+                      ])
+                    }
                   >
                     <button
                       type="button"

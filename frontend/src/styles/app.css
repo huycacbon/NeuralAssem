@@ -342,6 +342,34 @@
   }
 }
 
+/* Disassembly <-> Pseudocode sync in the function details panel (NodeDetails
+   FunctionView) - a row/line with a known counterpart in the other view gets
+   a pointer cursor and a faint left rail so the eye can tell which lines are
+   clickable before hovering; `.sync-flash` reuses the same flash keyframes
+   Ctrl+G uses in the debug assembly view, for one consistent "you just
+   landed here" cue across the app. */
+.disasm-row.sync-available,
+.pseudo-line.sync-available {
+  cursor: pointer;
+  border-left: 2px solid var(--accent);
+  padding-left: 4px;
+  margin-left: -6px;
+}
+
+.disasm-row.sync-available:hover,
+.pseudo-line.sync-available:hover {
+  background: color-mix(in srgb, var(--border-strong) 10%, transparent);
+}
+
+.pseudo-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sync-flash {
+  animation: assembly-row-jumped-flash 1.5s ease-out;
+}
+
 /* Floating "go to address" input (Ctrl+G) - anchored to the top-right of
    the assembly view, above the listing, so it never shifts row positions
    underneath it. */
@@ -1031,6 +1059,54 @@
   gap: 3px;
   border-color: var(--node-executing);
   color: var(--node-executing);
+}
+
+/* ---------- Right-click "Copy ..." menu (CopyContextMenu.tsx) ---------- */
+
+.copy-menu {
+  position: fixed;
+  z-index: 200; /* above the debug modal's 100, since a copy menu can be
+                   opened from a value shown inside that modal too */
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.3);
+}
+
+.copy-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 12.5px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.copy-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.copy-menu-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 200;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.3);
+  pointer-events: none;
 }
 
 .chip-remove {

@@ -165,6 +165,13 @@ export interface FunctionDetail extends FunctionSummary {
   pseudocode: string | null;
   pseudocodeStatus: PseudocodeStatus;
   pseudocodeNote: string | null;
+  /** Instruction address (e.g. "0x401000") -> 1-indexed line number in
+   *  `pseudocode` - drives the Disassembly<->Pseudocode sync (see
+   *  NodeDetails.tsx). `null` when pseudocode isn't available, or is but the
+   *  map itself couldn't be built - both are expected, not errors: not every
+   *  pseudocode line has a mapped instruction (declarations, braces, blank
+   *  lines), and not every instruction survives into the decompiled output. */
+  pseudocodeAddressLines: Record<string, number> | null;
 }
 
 export interface FunctionListResponse {

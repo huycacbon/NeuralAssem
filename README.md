@@ -262,13 +262,20 @@ Mở <http://127.0.0.1:5173>. API docs tại <http://127.0.0.1:8000/docs>.
    decompile tốn thời gian hơn hẳn disassembly — xem "Giới hạn hiện tại". Với các function
    còn lại, bấm **"Decompile hàm này"** để tạo pseudocode riêng ngay lúc đó (best-effort,
    dùng lại chính phân tích angr đã có sẵn trong bộ nhớ, không cần phân tích lại từ đầu).
-6. **Layout**: *Neural Network* (force-directed, mặc định cho call graph) hoặc
+   **Sync Disassembly ↔ Pseudocode** (kiểu IDA): dòng disassembly/pseudocode nào có viền
+   trái xanh là có ánh xạ hai chiều — click vào để nhảy sang dòng tương ứng ở view kia, tự
+   chuyển tab và highlight. Dựa trên `map_addr_to_pos` nội bộ của decompiler angr, nên
+   không phải dòng nào cũng có ánh xạ (khai báo biến, dấu ngoặc không có địa chỉ máy).
+6. **Chuột phải để copy**: giá trị thanh ghi, địa chỉ (disassembly/pseudocode/function
+   list/debug panel), tên hàm, tên block, dòng lệnh, dòng pseudocode — chuột phải vào giá
+   trị cần copy, chọn đúng mục trong menu hiện ra.
+7. **Layout**: *Neural Network* (force-directed, mặc định cho call graph) hoặc
    *Hierarchical Flow* (mặc định cho CFG).
-7. **Xuất Markdown**: nút ở toolbar tải về một báo cáo `.md` gọn — tóm tắt file, bảng function
+8. **Xuất Markdown**: nút ở toolbar tải về một báo cáo `.md` gọn — tóm tắt file, bảng function
    theo risk score, import theo capability, call graph dạng edge-list, và pseudocode/lý do risk
    cho các function đáng chú ý. Thiết kế để dán thẳng vào chat với AI hoặc gửi cho đồng nghiệp
    không cài tool này; không phải dump toàn bộ dữ liệu thô — xem mục 8.
-8. **Xuất tất cả (decompile hết)**: nút cạnh bên — chủ động decompile mọi function còn thiếu
+9. **Xuất tất cả (decompile hết)**: nút cạnh bên — chủ động decompile mọi function còn thiếu
    pseudocode (không giới hạn số lượng như bước tự động lúc phân tích), rồi tải về một báo cáo
    `.md` khác liệt kê pseudocode của **mọi** function đã decompile được, không chỉ top 25 theo
    risk. Vì decompile từng function có thể tốn tới hàng chục giây, thao tác này có thể mất vài

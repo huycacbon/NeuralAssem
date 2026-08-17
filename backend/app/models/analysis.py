@@ -67,6 +67,12 @@ class FunctionDetail(FunctionSummary):
     pseudocode: str | None = None
     pseudocode_status: str = "not_attempted"
     pseudocode_note: str | None = None
+    #: Instruction address (hex string, e.g. "0x401000") -> 1-indexed line
+    #: number in `pseudocode` - lets the UI sync a disassembly row with the
+    #: pseudocode line it decompiled into (IDA/x64dbg-style). `None` when
+    #: pseudocode isn't available, or when it is but the map itself could not
+    #: be built (best-effort on top of an already best-effort decompile).
+    pseudocode_address_lines: dict[str, int] | None = None
 
 
 class FunctionListResponse(CamelModel):

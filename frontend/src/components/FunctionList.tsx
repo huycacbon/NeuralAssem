@@ -6,6 +6,7 @@
 
 import { useMemo, useState } from 'react';
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import type { FunctionSummary, RiskLevel } from '@/types/graph';
 import { displayAddress } from '@/utils/addressDisplay';
 
@@ -37,6 +38,7 @@ export function FunctionList({
   onSelect,
   onOpenCfg,
 }: FunctionListProps): JSX.Element {
+  const { openCopyMenu } = useCopyMenu();
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
@@ -92,7 +94,13 @@ export function FunctionList({
             aria-selected={fn.address === selectedAddress}
             onClick={() => onSelect(fn)}
             onDoubleClick={() => onOpenCfg(fn)}
-            title="Click: focus node · Double-click: mở CFG"
+            onContextMenu={(event) =>
+              openCopyMenu(event, [
+                { label: 'tên hàm', value: fn.name },
+                { label: 'địa chỉ', value: displayAddress(fn.address, rebaseDelta) },
+              ])
+            }
+            title="Click: focus node · Double-click: mở CFG · Chuột phải: copy"
           >
             <div className="fn-item-top">
               <span className="fn-name">{fn.name}</span>

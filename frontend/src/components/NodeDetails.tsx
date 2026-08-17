@@ -3,8 +3,9 @@
  * function, basic block, or API.
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import { DebugPanel } from '@/components/DebugPanel';
 import { MemoryDumpPanel } from '@/components/MemoryDumpPanel';
 import type { DebugSessionState, StepMode } from '@/types/debug';
@@ -97,7 +98,60 @@ function FunctionView({
   onFocusAddress: (address: string) => void;
   onDecompile: (address: string) => void;
 }): JSX.Element {
+  const { openCopyMenu } = useCopyMenu();
   const [codeView, setCodeView] = useState<'disasm' | 'pseudo'>('disasm');
+  // -- Disassembly <-> Pseudocode sync (IDA/x64dbg-style: click a line in one
+  // view, jump to and flash the corresponding spot in the other) - built on
+  // `detail.pseudocodeAddressLines` (address -> pseudocode line number, from
+  // angr's own decompiler internals - see `angr_analyzer._pseudocode_address_lines`).
+  const addressToLine = detail?.pseudocodeAddressLines ?? null;
+  // Reverse of `addressToLine` - one pseudocode line can decompile from
+  // several instructions (e.g. a multi-instruction comparison folded into one
+  // `if`), so this is address*es* plural, sorted so the lowest (first
+  // executed) address is the jump target.
+  const lineToAddresses = useMemo(() => {
+    const map = new Map<number, string[]>();
+    if (!addressToLine) return map;
+    for (const [address, line] of Object.entries(addressToLine)) {
+      const list = map.get(line) ?? [];
+      list.push(address);
+      map.set(line, list);
+    }
+    for (const list of map.values()) list.sort();
+    return map;
+  }, [addressToLine]);
+  const pseudoLineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const disasmRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [syncHighlightLine, setSyncHighlightLine] = useState<number | null>(null);
+  const [syncHighlightAddress, setSyncHighlightAddress] = useState<string | null>(null);
+
+  const flashPseudoLine = (line: number): void => {
+    setCodeView('pseudo');
+    setSyncHighlightLine(line);
+    window.setTimeout(() => setSyncHighlightLine(null), 1500);
+  };
+
+  const flashDisasmRow = (address: string): void => {
+    setCodeView('disasm');
+    setSyncHighlightAddress(address);
+    window.setTimeout(() => setSyncHighlightAddress(null), 1500);
+  };
+
+  // Scrolling happens here, not inline in the flash* setters above - the
+  // target row/line only exists in `pseudoLineRefs`/`disasmRowRefs` once
+  // `codeView` has actually switched and that view's JSX has rendered and
+  // committed, which is exactly what this effect (running after commit)
+  // observes by depending on `codeView` itself alongside the highlight value.
+  useEffect(() => {
+    if (codeView === 'pseudo' && syncHighlightLine !== null) {
+      pseudoLineRefs.current.get(syncHighlightLine)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [codeView, syncHighlightLine]);
+  useEffect(() => {
+    if (codeView === 'disasm' && syncHighlightAddress !== null) {
+      disasmRowRefs.current.get(syncHighlightAddress)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [codeView, syncHighlightAddress]);
 
   const score = detail?.riskScore ?? node.metadata.riskScore ?? 0;
   const reasons = detail?.riskReasons ?? [];
@@ -116,14 +170,37 @@ function FunctionView({
   const pseudoNote = detail?.pseudocodeNote ?? null;
   const pseudoAvailable = pseudoStatus === 'available' && Boolean(pseudocode);
   const pseudoWaiting = loading && !detail;
+  const pseudocodeLines = pseudocode ? pseudocode.split('\n') : [];
+
+  // Repopulated fresh by each row/line's own ref callback below on every
+  // render - stale entries from a previous function/view must not linger
+  // (mirrors AssemblyView.tsx's `rowRefs` for the same reason).
+  disasmRowRefs.current.clear();
+  pseudoLineRefs.current.clear();
 
   return (
     <>
       <div className="panel-section">
-        <div className="detail-title">{detail?.name ?? node.label}</div>
+        <div
+          className="detail-title"
+          onContextMenu={(event) =>
+            openCopyMenu(event, [{ label: 'tên hàm', value: detail?.name ?? node.label }])
+          }
+        >
+          {detail?.name ?? node.label}
+        </div>
         <dl className="kv" style={{ marginTop: 6 }}>
           <dt>Address</dt>
-          <dd>{node.address ? displayAddress(node.address, rebaseDelta) : '-'}</dd>
+          <dd
+            onContextMenu={(event) =>
+              node.address &&
+              openCopyMenu(event, [
+                { label: 'địa chỉ', value: displayAddress(node.address, rebaseDelta) },
+              ])
+            }
+          >
+            {node.address ? displayAddress(node.address, rebaseDelta) : '-'}
+          </dd>
           <dt>Size</dt>
           <dd>{detail?.size != null ? `${detail.size} bytes` : '-'}</dd>
           <dt>Basic blocks</dt>
@@ -192,18 +269,48 @@ function FunctionView({
                   const instructions: Instruction[] = block.metadata.instructions ?? [];
                   return (
                     <div key={block.id}>
-                      <div className="disasm-block-header">
+                      <div
+                        className="disasm-block-header"
+                        onContextMenu={(event) =>
+                          openCopyMenu(event, [
+                            { label: 'địa chỉ block', value: displayAddress(block.address, rebaseDelta) },
+                          ])
+                        }
+                      >
                         {displayAddress(block.address, rebaseDelta)}
                         {block.metadata.isFunctionStart ? ' · entry' : ''}
                       </div>
                       {instructions.length > 0 ? (
-                        instructions.map((insn) => (
-                          <div className="disasm-row" key={insn.address}>
-                            <span className="a">{displayAddress(insn.address, rebaseDelta)}</span>
-                            <span className="m">{insn.mnemonic}</span>
-                            <span>{insn.operands}</span>
-                          </div>
-                        ))
+                        instructions.map((insn) => {
+                          const pseudoLine = addressToLine?.[insn.address] ?? null;
+                          const isSynced = pseudoLine !== null;
+                          const isHighlighted = syncHighlightAddress === insn.address;
+                          const shownAddress = displayAddress(insn.address, rebaseDelta);
+                          return (
+                            <div
+                              key={insn.address}
+                              ref={(el) => {
+                                if (el) disasmRowRefs.current.set(insn.address, el);
+                              }}
+                              className={`disasm-row${isSynced ? ' sync-available' : ''}${isHighlighted ? ' sync-flash' : ''}`}
+                              title={isSynced ? 'Click để nhảy tới dòng pseudocode tương ứng · Chuột phải để copy' : 'Chuột phải để copy'}
+                              onClick={isSynced ? () => flashPseudoLine(pseudoLine) : undefined}
+                              onContextMenu={(event) =>
+                                openCopyMenu(event, [
+                                  { label: 'địa chỉ', value: shownAddress },
+                                  {
+                                    label: 'dòng lệnh',
+                                    value: `${shownAddress}  ${insn.mnemonic} ${insn.operands}`.trim(),
+                                  },
+                                ])
+                              }
+                            >
+                              <span className="a">{shownAddress}</span>
+                              <span className="m">{insn.mnemonic}</span>
+                              <span>{insn.operands}</span>
+                            </div>
+                          );
+                        })
                       ) : (
                         <div className="disasm-row">
                           <span className="a" />
@@ -245,7 +352,30 @@ function FunctionView({
             )}
 
             {!pseudoWaiting && !isDecompiling && pseudoAvailable && (
-              <pre className="disasm disasm-full pseudocode">{pseudocode}</pre>
+              <pre className="disasm disasm-full pseudocode">
+                {pseudocodeLines.map((text, index) => {
+                  const lineNumber = index + 1;
+                  const addresses = lineToAddresses.get(lineNumber);
+                  const isSynced = Boolean(addresses && addresses.length > 0);
+                  const isHighlighted = syncHighlightLine === lineNumber;
+                  return (
+                    <div
+                      key={lineNumber}
+                      ref={(el) => {
+                        if (el) pseudoLineRefs.current.set(lineNumber, el);
+                      }}
+                      className={`pseudo-line${isSynced ? ' sync-available' : ''}${isHighlighted ? ' sync-flash' : ''}`}
+                      title={isSynced ? 'Click để nhảy tới dòng disassembly tương ứng' : undefined}
+                      onClick={isSynced ? () => flashDisasmRow(addresses![0]) : undefined}
+                      onContextMenu={(event) =>
+                        openCopyMenu(event, [{ label: 'dòng pseudocode', value: text }])
+                      }
+                    >
+                      {text || ' '}
+                    </div>
+                  );
+                })}
+              </pre>
             )}
 
             {!pseudoWaiting && !isDecompiling && !pseudoAvailable && (

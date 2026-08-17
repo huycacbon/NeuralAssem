@@ -90,6 +90,11 @@ def _to_detail(function: AnalyzedFunction, entry_point: int) -> FunctionDetail:
         pseudocode=function.pseudocode,
         pseudocode_status=function.pseudocode_status,
         pseudocode_note=function.pseudocode_note,
+        pseudocode_address_lines=(
+            {format_address(addr): line for addr, line in function.pseudocode_address_lines.items()}
+            if function.pseudocode_address_lines
+            else None
+        ),
     )
 
 

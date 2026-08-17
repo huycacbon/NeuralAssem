@@ -265,14 +265,21 @@ Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
    is far more expensive than disassembly — see "Current limitations". For the rest, click
    **"Decompile this function"** to generate pseudocode on demand (best-effort, reusing the angr
    analysis already held in memory — no need to re-analyse from scratch).
-6. **Layout**: *Neural Network* (force-directed, default for the call graph) or *Hierarchical Flow*
+   **Disassembly <-> Pseudocode sync** (IDA-style): a row/line with a blue left rail has a two-way
+   mapping - click it to jump to and highlight the matching spot in the other view, switching tabs
+   automatically. Built on angr's decompiler's own internal `map_addr_to_pos`, so not every line has
+   a mapping (variable declarations, bare braces have no machine address).
+6. **Right-click to copy**: register values, addresses (disassembly/pseudocode/function
+   list/debug panel), function names, block labels, instruction lines, pseudocode lines - right-click
+   the value you want, pick the matching item from the menu.
+7. **Layout**: *Neural Network* (force-directed, default for the call graph) or *Hierarchical Flow*
    (default for the CFG).
-7. **Export Markdown**: a toolbar button that downloads a compact `.md` report — file summary, a
+8. **Export Markdown**: a toolbar button that downloads a compact `.md` report — file summary, a
    function table sorted by risk score, imports grouped by capability, the call graph as an
    edge-list, and pseudocode/risk reasons for notable functions. Designed to be pasted straight
    into an AI chat or sent to a colleague without this tool installed; it is not a raw data dump —
    see section 8.
-8. **Export all (decompile everything)**: the button next to it — actively decompiles every
+9. **Export all (decompile everything)**: the button next to it — actively decompiles every
    function still missing pseudocode (no cap, unlike the bounded automatic pass at analysis time),
    then downloads a separate `.md` report listing pseudocode for **every** decompiled function, not
    just the top 25 by risk. Since decompiling one function can take tens of seconds, this can take

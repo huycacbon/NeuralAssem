@@ -22,6 +22,7 @@
 
 import { useState } from 'react';
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import type { DebugSessionState } from '@/types/debug';
 
 /** Mirrors `_FLAG_REGISTER_NAMES` in
@@ -71,6 +72,7 @@ export function DebugPanel({
   onSetRegister,
   onFocusStaticAddress,
 }: DebugPanelProps): JSX.Element {
+  const { openCopyMenu } = useCopyMenu();
   const [newBreakpointAddress, setNewBreakpointAddress] = useState('');
   const [editingRegister, setEditingRegister] = useState<string | null>(null);
   const [registerDraft, setRegisterDraft] = useState('');
@@ -107,9 +109,21 @@ export function DebugPanel({
 
       <dl className="kv" style={{ marginTop: 6 }}>
         <dt>Runtime address</dt>
-        <dd>{session.runtimeAddress ?? '-'}</dd>
+        <dd
+          onContextMenu={(event) =>
+            session.runtimeAddress &&
+            openCopyMenu(event, [{ label: 'địa chỉ runtime', value: session.runtimeAddress }])
+          }
+        >
+          {session.runtimeAddress ?? '-'}
+        </dd>
         <dt>Static address</dt>
-        <dd>
+        <dd
+          onContextMenu={(event) =>
+            session.staticAddress &&
+            openCopyMenu(event, [{ label: 'địa chỉ static', value: session.staticAddress }])
+          }
+        >
           {session.staticAddress ? (
             <button
               type="button"
@@ -123,7 +137,14 @@ export function DebugPanel({
           )}
         </dd>
         <dt>Module base</dt>
-        <dd>{session.moduleLoadBase ?? '-'}</dd>
+        <dd
+          onContextMenu={(event) =>
+            session.moduleLoadBase &&
+            openCopyMenu(event, [{ label: 'module base', value: session.moduleLoadBase }])
+          }
+        >
+          {session.moduleLoadBase ?? '-'}
+        </dd>
       </dl>
 
       <div className="chip-row" style={{ marginTop: 8 }}>
@@ -149,7 +170,16 @@ export function DebugPanel({
         <>
           <pre className="disasm">
             {gprRegisters.map((reg) => (
-              <div className="disasm-row register-row" key={reg.name}>
+              <div
+                className="disasm-row register-row"
+                key={reg.name}
+                onContextMenu={(event) =>
+                  openCopyMenu(event, [
+                    { label: 'tên thanh ghi', value: reg.name },
+                    { label: 'giá trị thanh ghi', value: reg.value },
+                  ])
+                }
+              >
                 <span className="a">{reg.name}</span>
                 {editingRegister === reg.name ? (
                   <input

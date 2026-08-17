@@ -17,6 +17,7 @@ disassembled. No state is stepped, no code is emulated, nothing is executed.
 
 from __future__ import annotations
 
+import bisect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -105,6 +106,15 @@ class AnalyzedFunction:
     pseudocode: str | None = None
     pseudocode_status: str = "not_attempted"
     pseudocode_note: str | None = None
+    #: Instruction address -> 1-indexed line number in `pseudocode` - lets the
+    #: UI jump between a disassembly row and the pseudocode line it decompiled
+    #: into (x64dbg/IDA-style sync), see `_pseudocode_address_lines`. Not
+    #: every line has a mapped address (declarations, braces, blank lines);
+    #: not every instruction address appears either (folded/optimised away by
+    #: the decompiler) - both are expected, not bugs. `None` until decompiled;
+    #: stays `None` if decompiling succeeded but building the map itself
+    #: failed (best-effort on top of an already best-effort pseudocode).
+    pseudocode_address_lines: dict[int, int] | None = None
 
     @property
     def block_count(self) -> int:
@@ -451,6 +461,36 @@ def _select_decompile_candidates(artifacts: AnalysisArtifacts) -> list[AnalyzedF
     return eligible
 
 
+def _pseudocode_address_lines(codegen: Any, text: str) -> dict[int, int]:
+    """Instruction address -> 1-indexed line number in `text`.
+
+    angr's codegen (`CStructuredCodeGenerator`) tracks `map_addr_to_pos`:
+    instruction address -> the *character position* it rendered at
+    (`.posmap_pos`), used internally for its own text search/highlight
+    features. Converted here into a per-line map instead, since the UI syncs
+    by line (a disassembly row highlighting a pseudocode *line*), not by raw
+    character offset. Best-effort: `map_addr_to_pos` is an angr-internal
+    structure with no documented stability guarantee, so any shape surprise
+    here should degrade to "no sync for this function", never break the
+    pseudocode text itself - see the try/except at the one call site.
+    """
+    line_starts = [0]
+    for line in text.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    # `line_starts[i]` = character offset where line `i+1` (1-indexed) begins.
+
+    def line_of(pos: int) -> int:
+        return bisect.bisect_right(line_starts, pos)
+
+    address_lines: dict[int, int] = {}
+    for address, element in codegen.map_addr_to_pos.items():
+        pos = getattr(element, "posmap_pos", None)
+        if pos is None:
+            continue
+        address_lines[address] = line_of(pos)
+    return address_lines
+
+
 def decompile_one_function(project: Any, cfg_model: Any, function: AnalyzedFunction) -> None:
     """Decompile a single function right now, mutating its `pseudocode*` fields.
 
@@ -472,6 +512,20 @@ def decompile_one_function(project: Any, cfg_model: Any, function: AnalyzedFunct
             function.pseudocode = text
             function.pseudocode_status = "available"
             function.pseudocode_note = None
+            try:
+                function.pseudocode_address_lines = _pseudocode_address_lines(
+                    decompiler.codegen, text
+                )
+            except Exception as exc:
+                # Sync data is a bonus on top of the pseudocode, not a
+                # requirement for it - a broken address map must not turn a
+                # successful decompile into a "failed" one.
+                function.pseudocode_address_lines = None
+                logger.debug(
+                    "Không tạo được address<->line map cho pseudocode ở 0x%x: %s",
+                    function.address,
+                    exc,
+                )
         else:
             function.pseudocode_status = "failed"
             function.pseudocode_note = "Decompiler không tạo được mã cho function này."

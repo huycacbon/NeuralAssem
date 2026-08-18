@@ -6,6 +6,7 @@ moments later via another at the exact same address) this exists to prevent.
 
 from __future__ import annotations
 
+import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -105,3 +106,45 @@ class TestThreadPinnedDebugBridge:
 
         assert len(recording.thread_ids) == 2
         assert recording.thread_ids[0] == recording.thread_ids[1]
+
+
+class TestThreadPinnedDebugBridgeDelegatesEveryMethod:
+    """Regression test for a real bug caught live: `list_modules`/
+    `is_breakpoint_planted` (both concrete `DebugBridge` extension points
+    with a default implementation, not abstract methods) were missing from
+    `ThreadPinnedDebugBridge`'s explicit method-by-method delegation list -
+    since `ThreadPinnedDebugBridge` itself subclasses `DebugBridge`, Python's
+    normal attribute lookup silently fell back to the *base class's own*
+    default (`[]`/`True`) instead of ever reaching the wrapped bridge.
+
+    Every production session wraps its bridge in this class
+    (`session_store.py`'s `bridge_factory`), so this made the module list
+    feature silently return nothing in the real running app - confirmed
+    live: `GET .../modules` returned `[]` even though `Win32DebugBridge`
+    itself, tested directly (bypassing this wrapper), correctly reported 5
+    loaded modules for the exact same session. Every lower-level test here
+    and in `test_win32_module_tracking.py`/`test_dynamic_session.py` passed
+    regardless, because none of them exercised the wrapper actually used in
+    production.
+
+    This test enumerates every public method `DebugBridge` defines (concrete
+    default or abstract, doesn't matter) and asserts `ThreadPinnedDebugBridge`
+    overrides each one *itself* (not inherited from `DebugBridge`), so a
+    future extension point added to one class without updating the other
+    fails a test instead of silently defaulting in production.
+    """
+
+    def test_every_debug_bridge_method_has_its_own_override(self) -> None:
+        public_methods = [
+            name
+            for name, _member in inspect.getmembers(DebugBridge, predicate=inspect.isfunction)
+            if not name.startswith("_")
+        ]
+        assert public_methods  # sanity - the interface actually has methods to check
+
+        missing = [name for name in public_methods if name not in ThreadPinnedDebugBridge.__dict__]
+        assert missing == [], (
+            f"ThreadPinnedDebugBridge is missing an explicit override for: {missing} - "
+            "without one, calls silently fall back to DebugBridge's own default instead "
+            "of ever reaching the wrapped bridge (see this test class's docstring)."
+        )

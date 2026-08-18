@@ -23,7 +23,7 @@
 import { useState } from 'react';
 
 import { useCopyMenu } from '@/components/CopyContextMenu';
-import type { DebugSessionState } from '@/types/debug';
+import type { DebugModule, DebugSessionState } from '@/types/debug';
 
 /** Mirrors `_FLAG_REGISTER_NAMES` in
  *  `backend/app/dynamic/debug_bridge/client.py` - kept as a separate
@@ -56,6 +56,12 @@ interface DebugPanelProps {
   onRemoveBreakpoint: (breakpointId: number) => void;
   onSetRegister: (name: string, value: string) => void;
   onFocusStaticAddress: (address: string) => void;
+  /** x64dbg-style module list (main EXE + every DLL currently loaded) -
+   *  fetched by `App.tsx` on demand (see `debugApi.listModules`'s
+   *  docstring), re-fetched after every step/continue since new modules can
+   *  load at any point. */
+  modules: DebugModule[];
+  loadingModules: boolean;
 }
 
 export function DebugPanel({
@@ -71,6 +77,8 @@ export function DebugPanel({
   onRemoveBreakpoint,
   onSetRegister,
   onFocusStaticAddress,
+  modules,
+  loadingModules,
 }: DebugPanelProps): JSX.Element {
   const { openCopyMenu } = useCopyMenu();
   const [newBreakpointAddress, setNewBreakpointAddress] = useState('');
@@ -287,7 +295,16 @@ export function DebugPanel({
             // runtime address instead, with a hint, rather than "null".
             const label = bp.staticAddress ?? `${bp.runtimeAddress} (ngoài module)`;
             return (
-              <span key={bp.id} className="chip breakpoint-chip">
+              <span
+                key={bp.id}
+                className={`chip breakpoint-chip${bp.planted ? '' : ' breakpoint-pending'}`}
+                title={
+                  bp.planted
+                    ? undefined
+                    : 'Chưa cấy được (thường vì module chứa địa chỉ này chưa load) - tự thử lại mỗi lần Continue/Step'
+                }
+              >
+                {!bp.planted && '⏳ '}
                 {label}
                 <button
                   type="button"
@@ -303,6 +320,38 @@ export function DebugPanel({
         </div>
       ) : (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Chưa có breakpoint.</p>
+      )}
+
+      <h4 style={{ marginTop: 12 }}>Modules ({modules.length})</h4>
+      {loadingModules && modules.length === 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Đang tải...</p>
+      )}
+      {modules.length > 0 ? (
+        <pre className="disasm">
+          {modules.map((module) => (
+            <div
+              className="disasm-row module-row"
+              key={module.loadBase}
+              onContextMenu={(event) =>
+                openCopyMenu(event, [
+                  { label: 'module base', value: module.loadBase },
+                  { label: 'tên module', value: module.moduleName },
+                ])
+              }
+            >
+              <span className="a">{module.loadBase}</span>
+              <span className="mono module-name" title={module.moduleName}>
+                {module.moduleName}
+              </span>
+            </div>
+          ))}
+        </pre>
+      ) : (
+        !loadingModules && (
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+            Chưa có dữ liệu module.
+          </p>
+        )
       )}
     </div>
   );

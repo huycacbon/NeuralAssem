@@ -39,6 +39,7 @@ from app.dynamic.models import (
     LiveDisassemblyResponse,
     LocalLaunchRequest,
     MemoryDumpResponse,
+    ModuleModel,
     RegisterWriteRequest,
     RiskCheckResponse,
     RuntimeBreakpointCreateRequest,
@@ -353,6 +354,46 @@ async def get_live_disassembly(
         raise _error(409, exc.code, exc.message) from exc
     except DebugBridgeError as exc:
         raise _error(502, "DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/disassembly/at", response_model=LiveDisassemblyResponse)
+async def get_live_disassembly_at(
+    session_id: str, store: StoreDep, address: str, count: int = 40
+) -> LiveDisassemblyResponse:
+    """Same as `GET .../disassembly`, except `address` is an explicit
+    *runtime* address rather than the debugger's current PC - the Ctrl+G
+    "jump into a loaded DLL" leg (see `DebugSession.disassemble_at`'s
+    docstring). `count` clamped the same way (1-200).
+    """
+    try:
+        session = store.get(session_id)
+    except DynamicSessionNotFound as exc:
+        raise _not_found_session(session_id) from exc
+
+    parsed_address = try_parse_address(address)
+    if parsed_address is None:
+        raise _invalid_address(address)
+
+    try:
+        return await run_in_threadpool(
+            session.disassemble_at, parsed_address, min(max(count, 1), 200)
+        )
+    except DynamicSessionError as exc:
+        raise _error(409, exc.code, exc.message) from exc
+    except DebugBridgeError as exc:
+        raise _error(502, "DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/modules", response_model=list[ModuleModel])
+async def get_modules(session_id: str, store: StoreDep) -> list[ModuleModel]:
+    """Every module currently mapped in the debuggee - main EXE plus every
+    DLL loaded since (including ones loaded well after attach) - see
+    `DebugSession.list_modules`'s docstring."""
+    try:
+        session = store.get(session_id)
+    except DynamicSessionNotFound as exc:
+        raise _not_found_session(session_id) from exc
+    return await run_in_threadpool(session.list_modules)
 
 
 @router.post("/sessions/{session_id}/step", response_model=SessionStateResponse)

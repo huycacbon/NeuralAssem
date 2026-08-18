@@ -20,8 +20,8 @@ import { useDebugSession } from '@/hooks/useDebugSession';
 import { useGraphFilters } from '@/hooks/useGraphFilters';
 import { analysisApi, ApiError } from '@/services/analysisApi';
 import { debugApi } from '@/services/debugApi';
-import type { LiveDisassemblyResponse } from '@/types/debug';
-import { computeRebaseDelta } from '@/utils/addressDisplay';
+import type { DebugModule, LiveDisassemblyResponse } from '@/types/debug';
+import { computeRebaseDelta, formatHexAddress } from '@/utils/addressDisplay';
 import type {
   AnalysisResponse,
   AnalysisStage,
@@ -152,11 +152,25 @@ export default function App(): JSX.Element {
   // lingers past the debugger no longer being stopped where the user left it.
   const [pinnedAssemblyGraph, setPinnedAssemblyGraph] = useState<Graph | null>(null);
   const [pinnedAssemblyJumpTarget, setPinnedAssemblyJumpTarget] = useState<number | null>(null);
+  // Ctrl+G tier 3 (see AssemblyView's module docstring): the target address
+  // wasn't in the static graph either - if a debug session is active, it
+  // might still be inside a loaded module the static analyzer never covered
+  // (a system DLL, most commonly). Mutually exclusive with
+  // `pinnedAssemblyGraph` - forced to `null` whenever this is set, so the
+  // live branch (`usingLive`) actually renders instead of whatever static
+  // function happened to be showing.
+  const [pinnedLiveDisassembly, setPinnedLiveDisassembly] = useState<LiveDisassemblyResponse | null>(
+    null,
+  );
   const [loadingPinnedAssembly, setLoadingPinnedAssembly] = useState(false);
   // Fallback for when the PC has no static function to show at all (system
   // DLLs, most commonly) - see AssemblyView's module docstring.
   const [liveDisassembly, setLiveDisassembly] = useState<LiveDisassemblyResponse | null>(null);
   const [loadingLiveDisassembly, setLoadingLiveDisassembly] = useState(false);
+  // x64dbg-style module list (main EXE + every DLL loaded) - see
+  // `DebugPanel.tsx`'s docstring and `debugApi.listModules`'s.
+  const [debugModules, setDebugModules] = useState<DebugModule[]>([]);
+  const [loadingDebugModules, setLoadingDebugModules] = useState(false);
   /** The exact `File` the user picked for the current analysis, kept in
    *  memory so local-launch can offer "run the file I just uploaded" as a
    *  one-click option - the backend's own copy is deleted right after
@@ -514,6 +528,12 @@ export default function App(): JSX.Element {
     () => parseHexAddress(debug.session?.staticAddress ?? null),
     [debug.session?.staticAddress],
   );
+  // Declared here (rather than lower down, closer to where they were
+  // originally used) because the Ctrl+G tier-3 handler just below needs
+  // `debugSessionId` - both are cheap derived values with no dependencies
+  // beyond `debug.session`, safe to compute this early.
+  const debugRuntimeAddress = debug.session?.runtimeAddress ?? null;
+  const debugSessionId = debug.session?.sessionId ?? null;
 
   // A manual Ctrl+G jump (AssemblyView's tier 2, see its module docstring) is
   // a temporary detour from "follow the debugger's PC" - the moment the PC
@@ -523,19 +543,62 @@ export default function App(): JSX.Element {
   useEffect(() => {
     setPinnedAssemblyGraph(null);
     setPinnedAssemblyJumpTarget(null);
+    setPinnedLiveDisassembly(null);
   }, [executingAddressValue]);
+
+  /** Ctrl+G tier 3 (see AssemblyView's module docstring): no static function
+   *  covers this address either, but a debug session is open - it might
+   *  still be inside a module the static analyzer never touched (a system
+   *  DLL, most commonly), which live-disassembly can read directly
+   *  regardless of what the debugger's own PC is currently doing (unlike
+   *  `disassemble_current`, `debugApi.getLiveDisassemblyAt` takes an
+   *  explicit address). A miss here (nothing mapped there at all) is the
+   *  final fallback - surfaces as a banner just like tier 2's miss. */
+  const handleJumpToLiveAddress = useCallback(
+    async (address: number) => {
+      if (!debugSessionId) return;
+      setLoadingPinnedAssembly(true);
+      try {
+        const result = await debugApi.getLiveDisassemblyAt(
+          debugSessionId,
+          formatHexAddress(address),
+          200,
+        );
+        if (result.instructions.length === 0) {
+          addBanner(
+            `Không disassemble được tại địa chỉ 0x${address.toString(16)} - có thể chưa được ` +
+              'map vào bộ nhớ tiến trình.',
+            'error',
+          );
+          return;
+        }
+        setPinnedAssemblyGraph(null); // forces the live branch to render, see state docstring
+        setPinnedLiveDisassembly(result);
+        setPinnedAssemblyJumpTarget(address);
+      } catch (error) {
+        if (error instanceof ApiError) addBanner(error.message, 'error');
+      } finally {
+        setLoadingPinnedAssembly(false);
+      }
+    },
+    [debugSessionId, addBanner],
+  );
 
   /** AssemblyView's Ctrl+G tier 2: `address` wasn't in the currently
    *  rendered listing, so look up whichever function's address *range*
    *  actually contains it, fetch its CFG (sharing the same cache as the
    *  graph view and the PC-follow effect below), and pin the assembly view
-   *  to it. A miss (no function covers this address at all) surfaces as a
-   *  banner, same as any other failed lookup in this app. */
+   *  to it. A miss falls through to tier 3 (`handleJumpToLiveAddress`) while
+   *  a debug session is open, or surfaces as a banner otherwise. */
   const handleJumpToStaticAddress = useCallback(
     (address: number) => {
       if (!analysis) return;
       const enclosingFunction = findEnclosingFunction(address);
       if (!enclosingFunction) {
+        if (debugSessionId) {
+          void handleJumpToLiveAddress(address);
+          return;
+        }
         addBanner(
           `Không tìm thấy hàm nào chứa địa chỉ 0x${address.toString(16)} trong graph tĩnh.`,
           'error',
@@ -550,6 +613,7 @@ export default function App(): JSX.Element {
             graph = await analysisApi.getFunctionCfg(analysis.analysisId, enclosingFunction.address);
             cfgCacheRef.current.set(enclosingFunction.address, graph);
           }
+          setPinnedLiveDisassembly(null); // static tier 2 wins if both somehow resolve
           setPinnedAssemblyGraph(graph);
           setPinnedAssemblyJumpTarget(address);
         } catch (error) {
@@ -559,7 +623,7 @@ export default function App(): JSX.Element {
         }
       })();
     },
-    [analysis, findEnclosingFunction, addBanner],
+    [analysis, findEnclosingFunction, addBanner, debugSessionId, handleJumpToLiveAddress],
   );
 
   const handlePinnedJumpConsumed = useCallback(() => setPinnedAssemblyJumpTarget(null), []);
@@ -697,9 +761,6 @@ export default function App(): JSX.Element {
     };
   }, [analysis, executingAddressValue, findEnclosingFunction, debugFunctionCfg, nextFunctionAfter]);
 
-  const debugRuntimeAddress = debug.session?.runtimeAddress ?? null;
-  const debugSessionId = debug.session?.sessionId ?? null;
-
   // Fallback for when there is no static function to show at all (the PC is
   // in a system DLL, most commonly) - only kicks in once the static lookup
   // above has settled and genuinely come up empty, and re-fetches on every
@@ -731,6 +792,33 @@ export default function App(): JSX.Element {
       cancelled = true;
     };
   }, [debugSessionId, debugRuntimeAddress, loadingDebugFunctionCfg, debugFunctionCfg]);
+
+  // Module list (DebugPanel's "Modules" section) - re-fetched on every new
+  // runtime address (i.e. every step/continue), since a DLL can load at any
+  // point during execution, not just once at attach.
+  useEffect(() => {
+    if (!debugSessionId) {
+      setDebugModules([]);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingDebugModules(true);
+    void (async () => {
+      try {
+        const result = await debugApi.listModules(debugSessionId);
+        if (!cancelled) setDebugModules(result);
+      } catch {
+        if (!cancelled) setDebugModules([]);
+      } finally {
+        if (!cancelled) setLoadingDebugModules(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debugSessionId, debugRuntimeAddress]);
 
   /** Click-to-toggle-breakpoint from the assembly gutter: set one if the
    *  address is bare, remove the existing one otherwise - mirrors what
@@ -1059,9 +1147,9 @@ export default function App(): JSX.Element {
 
           {debug.session && debugViewMode === 'assembly' ? (
             <AssemblyView
-              graph={pinnedAssemblyGraph ?? debugFunctionCfg}
+              graph={pinnedLiveDisassembly ? null : (pinnedAssemblyGraph ?? debugFunctionCfg)}
               loadingGraph={pinnedAssemblyGraph ? loadingPinnedAssembly : loadingDebugFunctionCfg}
-              liveDisassembly={liveDisassembly}
+              liveDisassembly={pinnedLiveDisassembly ?? liveDisassembly}
               loadingLive={loadingLiveDisassembly}
               status={debug.session.status}
               executingAddress={executingAddressValue}
@@ -1121,6 +1209,8 @@ export default function App(): JSX.Element {
           onDebugSetBreakpoint={(address) => void debug.setBreakpoint(address)}
           onDebugRemoveBreakpoint={(id) => void debug.removeBreakpoint(id)}
           onDebugSetRegister={(name, value) => void debug.setRegister(name, value)}
+          debugModules={debugModules}
+          loadingDebugModules={loadingDebugModules}
         />
       </div>
 

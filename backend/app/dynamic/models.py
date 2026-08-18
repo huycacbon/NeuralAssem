@@ -82,6 +82,27 @@ class BreakpointModel(CamelModel):
     #: docstring.
     static_address: str | None
     runtime_address: str
+    #: Whether the physical ``0xCC`` is currently written into the debuggee.
+    #: ``False`` most commonly means "the module this address is inside
+    #: hasn't loaded yet" (a DLL loaded later via ``LoadLibrary``, most
+    #: often) - not broken, just not plantable *yet*. Breakpoints are
+    #: planted lazily inside ``go()`` (see ``Win32DebugBridge.go``'s
+    #: docstring), so this reflects the outcome of the *last* resume, not a
+    #: live poll; a not-yet-loaded module's breakpoint keeps retrying every
+    #: subsequent ``go()`` automatically until it succeeds.
+    planted: bool = True
+
+
+class ModuleModel(CamelModel):
+    """One row of the debuggee's module list (main EXE + every DLL currently
+    mapped) - see ``DebugSession.list_modules``'s docstring."""
+
+    load_base: str
+    module_name: str
+    #: ``0`` when the module's own ``SizeOfImage`` could not be read (best-
+    #: effort, see ``Win32DebugBridge._module_size``'s docstring) - not an
+    #: error, just "size unknown".
+    size: int
 
 
 class SessionStateResponse(CamelModel):

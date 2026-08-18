@@ -624,9 +624,14 @@ Toàn bộ spec/ràng buộc an toàn: [`docs/dynamic-analysis-spec.md`](docs/dy
   Nếu PC đang ở module hệ thống (ngoài phạm vi static analyzer, vd. `ntdll`/`kernel32`) thì
   disassemble trực tiếp từ tiến trình sống thay vì dùng dữ liệu tĩnh — breakpoint đặt được ở cả
   hai trường hợp (địa chỉ tĩnh trong module đang phân tích, hoặc địa chỉ runtime ngoài module đó).
-- **Ctrl+G "go to address"** (kiểu x64dbg) trong Assembly View: nhảy tới dòng đang hiển thị, hoặc
-  gõ một địa chỉ/tên `sub_<hex>` chưa hiển thị — app tự tra function tĩnh chứa địa chỉ đó, tải CFG
-  và chuyển hẳn khung nhìn sang đó, kể cả khi đang xem live-disassembly của module hệ thống.
+- **Ctrl+G "go to address"** (kiểu x64dbg) trong Assembly View, ba tầng tra cứu: (1) dòng đang
+  hiển thị sẵn; (2) chưa hiển thị nhưng có function tĩnh chứa địa chỉ đó — tự tải CFG và chuyển
+  khung nhìn sang; (3) không có function tĩnh nào chứa, nhưng đang debug — tự live-disassemble
+  ngay tại địa chỉ đó nếu nó nằm trong một module *đã load* (kể cả module hệ thống như `ntdll`,
+  và không cần đó là địa chỉ PC hiện tại) trước khi báo lỗi.
+- **Modules** (kiểu x64dbg): danh sách mọi module đang map trong tiến trình debug — EXE chính và
+  từng DLL đã load, gồm cả DLL load muộn sau khi attach — base address + đường dẫn file, tự làm
+  mới sau mỗi step/continue.
 - **Register & flags**: đọc và **sửa** giá trị register (x86 và x64) cùng từng bit EFLAGS
   (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — sửa xong, Step Into/Step Over kế tiếp dùng ngay giá trị đã sửa.
 - **Memory dump**: xem raw byte tại bất kỳ địa chỉ runtime nào (dạng address/hex/ASCII cổ điển),
@@ -635,10 +640,16 @@ Toàn bộ spec/ràng buộc an toàn: [`docs/dynamic-analysis-spec.md`](docs/dy
   đồ thị, CFG, Assembly View) tự động cộng bù ASLR để khớp với địa chỉ runtime thật — dữ liệu gốc
   dùng cho API/breakpoint vẫn giữ nguyên tọa độ tĩnh. Export Markdown khi đang debug cũng xuất
   địa chỉ runtime thật, không phải địa chỉ tĩnh.
+- **Breakpoint "pending"**: breakpoint đặt trên địa chỉ thuộc module chưa load (DLL sẽ `LoadLibrary`
+  sau) vẫn được ghi nhận, hiện dấu ⏳ trong danh sách Breakpoints — tự động cấy lại (plant) mỗi lần
+  bấm Continue cho tới khi module đó load xong, không cần thao tác gì thêm. Khi module unload
+  (`FreeLibrary`), breakpoint đã cấy trong vùng nhớ đó tự dọn để không "ám" nhầm vào module khác
+  lỡ được nạp đè lên đúng dải địa chỉ vừa giải phóng.
 
 **Chưa có / còn hạn chế:** ghi memory tùy ý (`write_memory` có ở tầng bridge nhưng chưa có
 API/UI), attach theo `processName` thay vì luôn launch mới, step-over/step-into qua ranh giới
-nhiều thread cùng lúc chỉ theo dõi thread hiện hành.
+nhiều thread cùng lúc chỉ theo dõi thread hiện hành, breakpoint pending chỉ tự cấy lại khi bấm
+Continue (chưa áp dụng cho Step Into/Step Over).
 
 Modal cảnh báo bắt buộc hiện trước khi mở phiên debug (một lần mỗi phiên trang), nhắc rõ đây là
 thực thi thật trên máy hiện tại, không phải sandbox.

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.analyzers.angr_analyzer import AnalysisArtifacts
 from app.dependencies import get_repository
+from app.dynamic.debug_bridge.client import ModuleInfo
 from app.dynamic.dependencies import get_session_store
 from app.dynamic.session_store import SessionStore
 from app.main import app
@@ -326,6 +327,101 @@ class TestLiveDisassembly:
         response = client.get(f"/api/dynamic/sessions/{session.session_id}/disassembly")
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "DYNAMIC_DISASSEMBLE_UNSUPPORTED"
+
+
+class TestLiveDisassemblyAt:
+    """`GET /dynamic/sessions/{id}/disassembly/at` - the Ctrl+G "jump into a
+    loaded DLL" leg, an explicit address rather than the current PC. See
+    `DebugSession.disassemble_at`'s docstring."""
+
+    def test_happy_path_uses_the_requested_address(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(
+            f"/api/dynamic/sessions/{session_id}/disassembly/at",
+            params={"address": "0x7ffd00005000", "count": 3},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["runtimeAddress"] == "0x7ffd00005000"
+        assert len(payload["instructions"]) == 3
+        assert payload["instructions"][0]["address"] == "0x7ffd00005000"
+
+    def test_invalid_address_returns_400(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(
+            f"/api/dynamic/sessions/{session_id}/disassembly/at",
+            params={"address": "not-a-hex-address"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "DYNAMIC_INVALID_ADDRESS"
+
+    def test_unknown_session_returns_404(
+        self, client: TestClient, fake_store: SessionStore
+    ) -> None:
+        response = client.get(
+            "/api/dynamic/sessions/does-not-exist/disassembly/at",
+            params={"address": "0x401000"},
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "DYNAMIC_SESSION_NOT_FOUND"
+
+
+class TestModuleList:
+    """`GET /dynamic/sessions/{id}/modules` - see
+    `DebugSession.list_modules`'s docstring."""
+
+    def test_returns_the_bridges_module_list(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session = fake_store.get(connect.json()["sessionId"])
+        session._bridge.modules = [  # noqa: SLF001 - test-only reach-through
+            ModuleInfo(load_base=0x140000000, module_name="sample.exe", size=0x27000),
+        ]
+
+        response = client.get(f"/api/dynamic/sessions/{session.session_id}/modules")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload == [
+            {"loadBase": "0x140000000", "moduleName": "sample.exe", "size": 0x27000}
+        ]
+
+    def test_empty_by_default(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(f"/api/dynamic/sessions/{session_id}/modules")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_unknown_session_returns_404(
+        self, client: TestClient, fake_store: SessionStore
+    ) -> None:
+        response = client.get("/api/dynamic/sessions/does-not-exist/modules")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "DYNAMIC_SESSION_NOT_FOUND"
 
 
 class TestLocalLaunch:

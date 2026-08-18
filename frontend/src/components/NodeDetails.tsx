@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useCopyMenu } from '@/components/CopyContextMenu';
 import { DebugPanel } from '@/components/DebugPanel';
 import { MemoryDumpPanel } from '@/components/MemoryDumpPanel';
-import type { DebugSessionState, StepMode } from '@/types/debug';
+import type { DebugModule, DebugSessionState, StepMode } from '@/types/debug';
 import type {
   FunctionDetail,
   Graph,
@@ -75,6 +75,10 @@ interface NodeDetailsProps {
   onDebugSetBreakpoint: (staticAddress: string) => void;
   onDebugRemoveBreakpoint: (breakpointId: number) => void;
   onDebugSetRegister: (name: string, value: string) => void;
+  /** x64dbg-style module list - fetched by `App.tsx`, passed straight
+   *  through to `DebugPanel` (see its own docstring). */
+  debugModules: DebugModule[];
+  loadingDebugModules: boolean;
 }
 
 function FunctionView({
@@ -649,6 +653,8 @@ export function NodeDetails({
   onDebugSetBreakpoint,
   onDebugRemoveBreakpoint,
   onDebugSetRegister,
+  debugModules,
+  loadingDebugModules,
 }: NodeDetailsProps): JSX.Element {
   return (
     <aside className="panel panel-right">
@@ -672,6 +678,8 @@ export function NodeDetails({
             onRemoveBreakpoint={onDebugRemoveBreakpoint}
             onSetRegister={onDebugSetRegister}
             onFocusStaticAddress={onFocusAddress}
+            modules={debugModules}
+            loadingModules={loadingDebugModules}
           />
         )}
 

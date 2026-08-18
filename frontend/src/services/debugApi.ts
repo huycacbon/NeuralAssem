@@ -13,6 +13,7 @@
 import { ApiError } from '@/services/analysisApi';
 import type {
   DebugBreakpoint,
+  DebugModule,
   DebugSessionState,
   LiveDisassemblyResponse,
   MemoryDumpResponse,
@@ -51,6 +52,8 @@ interface DesktopDebugBridge {
   debug_get_state(sessionId: string): Promise<unknown>;
   debug_set_register(sessionId: string, name: string, value: string): Promise<unknown>;
   debug_disassemble(sessionId: string, count: number): Promise<unknown>;
+  debug_disassemble_at(sessionId: string, address: string, count: number): Promise<unknown>;
+  debug_list_modules(sessionId: string): Promise<unknown>;
   debug_dump_memory(sessionId: string, address: string, size: number): Promise<unknown>;
   debug_set_breakpoint(sessionId: string, staticAddress: string): Promise<unknown>;
   debug_set_runtime_breakpoint(sessionId: string, runtimeAddress: string): Promise<unknown>;
@@ -272,6 +275,45 @@ export const debugApi = {
       return callBridge(async () => (await getBridge()).debug_disassemble(sessionId, count));
     }
     return request(`/api/dynamic/sessions/${sessionId}/disassembly?count=${count}`);
+  },
+
+  /**
+   * Same as `getLiveDisassembly` above, except `address` is an explicit
+   * *runtime* address rather than the debugger's current PC - the Ctrl+G
+   * "jump into a loaded DLL" leg (see `AssemblyView.tsx`'s module
+   * docstring): `address` need not be anywhere near where execution
+   * currently is, only inside some module this session has already loaded
+   * far enough to have mapped memory at.
+   */
+  async getLiveDisassemblyAt(
+    sessionId: string,
+    address: string,
+    count = 40,
+  ): Promise<LiveDisassemblyResponse> {
+    if (isDesktop()) {
+      return callBridge(async () =>
+        (await getBridge()).debug_disassemble_at(sessionId, address, count),
+      );
+    }
+    return request(
+      `/api/dynamic/sessions/${sessionId}/disassembly/at?address=${encodeURIComponent(address)}&count=${count}`,
+    );
+  },
+
+  /**
+   * Every module currently mapped in the debuggee (x64dbg-style: main EXE +
+   * every DLL loaded since, including ones loaded well after attach) - see
+   * `backend/app/dynamic/session.py`'s `list_modules` docstring. Fetched on
+   * demand, not part of `DebugSessionState`/`getState` (same convention as
+   * live disassembly) - callers are expected to re-fetch after a
+   * step/continue if they want an up-to-date list, since new modules can
+   * load at any point during execution.
+   */
+  async listModules(sessionId: string): Promise<DebugModule[]> {
+    if (isDesktop()) {
+      return callBridge(async () => (await getBridge()).debug_list_modules(sessionId));
+    }
+    return request(`/api/dynamic/sessions/${sessionId}/modules`);
   },
 
   /**

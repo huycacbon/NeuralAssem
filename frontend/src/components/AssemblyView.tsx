@@ -31,7 +31,7 @@
  * OllyDbg, WinDbg's own listing).
  *
  * Ctrl+G ("go to address", the same shortcut x64dbg uses) jumps to and
- * briefly highlights a matching row. Two tiers:
+ * briefly highlights a matching row. Three tiers, tried in order:
  * 1. Already present in the *currently rendered* listing - scrolls to it
  *    immediately, no round trip. Accepts either the raw address (static: the
  *    un-rebased value; live: the runtime value) or, on the static branch, the
@@ -48,9 +48,18 @@
  *    currently on the `liveDisassembly` branch (PC sitting in a system DLL) -
  *    that is precisely when jumping to a `sub_...` static function by name is
  *    most useful, and a static function's address means the same thing
- *    regardless of which branch happens to be on screen right now. A target
- *    no static function covers at all (a bare runtime address with nothing
- *    resembling it in the static graph) surfaces as an error banner.
+ *    regardless of which branch happens to be on screen right now.
+ * 3. Tier 2 also came up empty (no static function covers it at all) and a
+ *    debug session is open - `App.tsx` tries live-disassembling directly at
+ *    that address instead (`debugApi.getLiveDisassemblyAt`, an *explicit*
+ *    address rather than the debugger's current PC), for a loaded module the
+ *    static analyzer never covered - a system DLL, most commonly, jumped to
+ *    by an address the user copied from somewhere other than "where the PC
+ *    currently is" (a call target seen in the pseudocode/disassembly, a
+ *    module's base + offset, ...). Swaps `liveDisassembly` the same way tier
+ *    2 swaps `graph`. A target genuinely unmapped anywhere (neither a static
+ *    function nor readable live memory) surfaces as an error banner - the
+ *    final fallback, same UX either way.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';

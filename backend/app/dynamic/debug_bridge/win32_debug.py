@@ -419,6 +419,21 @@ def _configure_kernel32_signatures(kernel32: ctypes.WinDLL) -> None:
     kernel32.FlushInstructionCache.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_size_t]
     kernel32.FlushInstructionCache.restype = wintypes.BOOL
 
+    # Module-name resolution for `list_modules` - exported directly from
+    # kernel32 since Vista (no separate psapi.dll link needed). `hModule`
+    # here is the module's base address *as seen inside the target process*
+    # (a `LOAD_DLL_DEBUG_EVENT`'s `lpBaseOfDll`), never one of our own
+    # process's handles - this is the standard technique every native
+    # Windows debugger/process-inspection tool uses to resolve a remote
+    # process's own module path.
+    kernel32.K32GetModuleFileNameExW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    kernel32.K32GetModuleFileNameExW.restype = wintypes.DWORD
+
 
 @dataclass
 class _PendingEvent:
@@ -481,6 +496,13 @@ class Win32DebugBridge(DebugBridge):
         self._next_software_breakpoint_id = 1
         self._planted: dict[int, bytes] = {}
         self._pending_rearm: int | None = None
+        # Every module currently mapped in the debuggee - the main EXE
+        # (registered at `_CREATE_PROCESS_DEBUG_EVENT`) plus every DLL loaded
+        # since (`_LOAD_DLL_DEBUG_EVENT`), dropped again on
+        # `_UNLOAD_DLL_DEBUG_EVENT` - see `_register_module`/
+        # `_unregister_module`. Keyed by load base, the same key `ModuleInfo`
+        # itself carries, so a lookup never needs a linear scan.
+        self._modules: dict[int, ModuleInfo] = {}
 
     # -- remote path: not implemented here, see module docstring ----------
 
@@ -560,11 +582,13 @@ class Win32DebugBridge(DebugBridge):
                 module_base = int(info.lpBaseOfImage or 0)
                 if info.hFile:
                     self._kernel32.CloseHandle(info.hFile)
+                self._register_module(module_base)
                 self._continue_raw(event, handled=True)
                 continue
             if code == _LOAD_DLL_DEBUG_EVENT:
                 if event.u.LoadDll.hFile:
                     self._kernel32.CloseHandle(event.u.LoadDll.hFile)
+                self._register_module(int(event.u.LoadDll.lpBaseOfDll or 0))
                 self._continue_raw(event, handled=True)
                 continue
             if code == _CREATE_THREAD_DEBUG_EVENT:
@@ -642,6 +666,97 @@ class Win32DebugBridge(DebugBridge):
         for address in list(self._planted):
             if address not in breakpoint_addresses:
                 self._unplant_breakpoint(address)
+
+    def is_breakpoint_planted(self, runtime_address: int) -> bool:
+        return runtime_address in self._planted
+
+    # -- module tracking (main EXE + every DLL load/unload) -----------------
+
+    def list_modules(self) -> list[ModuleInfo]:
+        # Re-resolve any module still stuck on its hex-address fallback name
+        # (see `_module_name`'s docstring: `K32GetModuleFileNameExW` reliably
+        # fails for a module registered *during* the initial debug-event
+        # pump - confirmed live, the loader has not finished settling that
+        # module into the process's own module list yet at that exact
+        # instant) - by the time anything actually calls `list_modules`
+        # (well after attach), the loader has long since caught up, so a
+        # fresh attempt here is cheap and self-healing without needing a
+        # background retry mechanism.
+        for base, module in list(self._modules.items()):
+            if module.module_name == self._fallback_module_name(base):
+                self._modules[base] = ModuleInfo(
+                    load_base=base, module_name=self._module_name(base), size=module.size
+                )
+        return sorted(self._modules.values(), key=lambda module: module.load_base)
+
+    @staticmethod
+    def _fallback_module_name(base: int) -> str:
+        return f"0x{base:x}"
+
+    def _module_size(self, base: int) -> int:
+        """Best-effort `SizeOfImage` for the module mapped at `base`, parsed
+        from its own PE headers via `ReadProcessMemory` + `pefile` (lazy
+        import, matching this module's existing convention for `capstone` -
+        both are hard dependencies transitively pulled in by angr, imported
+        lazily anyway for consistency). `0` on any failure (partial read,
+        corrupt/packed header, the module unloading mid-read) - callers
+        treat that as "size unknown, not fatal": the module is still tracked
+        as loaded, just without a size hint, and `_unregister_module` simply
+        won't find any breakpoints to clean up inside a 0-byte range."""
+        try:
+            import pefile  # noqa: PLC0415
+
+            header = self.read_memory(base, 4096)
+            pe = pefile.PE(data=header, fast_load=True)
+            return int(pe.OPTIONAL_HEADER.SizeOfImage)
+        except Exception as exc:
+            logger.debug("Không đọc được SizeOfImage cho module tại 0x%x: %s", base, exc)
+            return 0
+
+    def _module_name(self, base: int) -> str:
+        """Best-effort file path for the module at `base`, via
+        `GetModuleFileNameExW` - the standard technique for resolving a
+        *target* process's own module path from its base address (an
+        `HMODULE` here is just that base address, reinterpreted - never one
+        of this process's own handles). Falls back to the bare hex address
+        if resolution fails (process exiting mid-call, insufficient buffer -
+        520 chars covers `MAX_PATH` with room to spare) - cosmetic only, a
+        failure here must never block tracking the module as loaded."""
+        buffer = ctypes.create_unicode_buffer(520)
+        length = self._kernel32.K32GetModuleFileNameExW(
+            self._process_handle, ctypes.c_void_p(base), buffer, len(buffer)
+        )
+        return buffer.value if length else self._fallback_module_name(base)
+
+    def _register_module(self, base: int) -> None:
+        if base == 0 or base in self._modules:
+            return
+        self._modules[base] = ModuleInfo(
+            load_base=base, module_name=self._module_name(base), size=self._module_size(base)
+        )
+
+    def _unregister_module(self, base: int) -> None:
+        module = self._modules.pop(base, None)
+        if module is None or module.size <= 0:
+            return
+        # Windows freely recycles freed virtual address ranges - the moment
+        # this module unmaps, any `0xCC` this bridge left planted somewhere
+        # inside its range becomes a landmine for whatever unrelated module
+        # (or plain heap/stack memory) happens to get mapped over the same
+        # addresses next. Confirmed as a real, live "stuck at an unexpected
+        # address" report: Continue/Step appearing to freeze at a location
+        # the user never set a breakpoint at - a stale planted byte in
+        # memory that used to be a since-unloaded DLL is exactly that
+        # symptom. Drop the bookkeeping now, before that can happen; the
+        # physical byte is gone with the unmapped page regardless, only the
+        # bookkeeping needs cleaning up so a future module loaded at an
+        # overlapping address never gets "unplanted" (i.e. have an
+        # unrelated byte written back into it) by mistake.
+        low, high = module.load_base, module.load_base + module.size
+        for address in [addr for addr in self._planted if low <= addr < high]:
+            del self._planted[address]
+        if self._pending_rearm is not None and low <= self._pending_rearm < high:
+            self._pending_rearm = None
 
     def _rearm_if_pending(self) -> None:
         address = self._pending_rearm
@@ -778,6 +893,16 @@ class Win32DebugBridge(DebugBridge):
             if code == _LOAD_DLL_DEBUG_EVENT:
                 if event.u.LoadDll.hFile:
                     self._kernel32.CloseHandle(event.u.LoadDll.hFile)
+                self._register_module(int(event.u.LoadDll.lpBaseOfDll or 0))
+                self._continue_raw(event, handled=True)
+                continue
+
+            if code == _UNLOAD_DLL_DEBUG_EVENT:
+                # See `_unregister_module`'s docstring - this is also where a
+                # stale planted breakpoint inside the unloading module's
+                # range gets cleaned up, before the address range can be
+                # recycled by whatever loads next.
+                self._unregister_module(int(event.u.UnloadDll.lpBaseOfDll or 0))
                 self._continue_raw(event, handled=True)
                 continue
 

@@ -1061,6 +1061,32 @@
   color: var(--node-executing);
 }
 
+/* Not yet physically planted (most commonly: its module hasn't loaded yet) -
+   dimmer/dashed so it reads as "waiting", not "broken" - it keeps retrying
+   automatically on every Continue/Step, no action needed from the user. */
+.breakpoint-pending {
+  border-color: var(--text-faint);
+  color: var(--text-faint);
+  border-style: dashed;
+}
+
+/* Module list (DebugPanel) - two columns (base address, name/path) instead
+   of `.disasm-row`'s default three (address/mnemonic/operands) - a module
+   row has no mnemonic column, and the path needs the room a fixed 62px
+   column would cut short. Compound selector (not just `.module-row`) so
+   this reliably beats `.disasm-row`'s own `grid-template-columns`
+   regardless of source order - same equal-specificity trap `.assembly-row`
+   already hit once (see that rule's own comment). */
+.disasm-row.module-row {
+  grid-template-columns: 150px 1fr;
+}
+
+.module-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- Right-click "Copy ..." menu (CopyContextMenu.tsx) ---------- */
 
 .copy-menu {

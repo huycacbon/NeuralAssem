@@ -28,6 +28,7 @@ from app.dynamic.models import (
     LiveDisassemblyResponse,
     LiveInstructionModel,
     MemoryDumpResponse,
+    ModuleModel,
     RegisterModel,
     SessionStateResponse,
     StackFrameModel,
@@ -412,6 +413,61 @@ class DebugSession:
                 ],
             )
 
+    def disassemble_at(self, runtime_address: int, instruction_count: int) -> LiveDisassemblyResponse:
+        """Same as `disassemble_current`, except forward from an explicitly
+        requested runtime address rather than the debugger's current PC -
+        the "jump to an address in a DLL that's actually loaded" leg of
+        Ctrl+G (see `AssemblyView.tsx`'s docstring): `runtime_address` need
+        not be anywhere near where execution currently is, only inside some
+        module this session has already loaded far enough to have mapped
+        memory at. Shares every other aspect (no `address_map` translation,
+        same `NotImplementedError` handling) with that method - see its
+        docstring for the rest.
+        """
+        with self._lock:
+            self.touch()
+            if self.status not in (SessionStatus.ATTACHED, SessionStatus.BREAK):
+                raise DynamicSessionError(
+                    "DYNAMIC_NOT_STOPPED", "Chỉ disassemble được khi đã dừng (attached/break)"
+                )
+            try:
+                instructions = self._bridge.disassemble_range(runtime_address, instruction_count)
+            except NotImplementedError as exc:
+                raise DynamicSessionError("DYNAMIC_DISASSEMBLE_UNSUPPORTED", str(exc)) from exc
+
+            module_label: str | None = None
+            try:
+                module_label = self._bridge.module_label_at(runtime_address)
+            except Exception:  # pragma: no cover - cosmetic only, never fatal
+                module_label = None
+
+            return LiveDisassemblyResponse(
+                runtime_address=format_address(runtime_address),
+                module_label=module_label,
+                instructions=[
+                    LiveInstructionModel(
+                        address=format_address(insn.address),
+                        mnemonic=insn.mnemonic,
+                        operands=insn.operands,
+                    )
+                    for insn in instructions
+                ],
+            )
+
+    # -- modules (x64dbg-style module list: main EXE + every loaded DLL) ----
+
+    def list_modules(self) -> list[ModuleModel]:
+        with self._lock:
+            self.touch()
+            return [
+                ModuleModel(
+                    load_base=format_address(module.load_base),
+                    module_name=module.module_name,
+                    size=module.size,
+                )
+                for module in self._bridge.list_modules()
+            ]
+
     # -- memory dump (assembly-view's read/write sibling) -------------------
 
     def dump_memory(self, address: int, size: int) -> MemoryDumpResponse:
@@ -507,6 +563,7 @@ class DebugSession:
                             else None
                         ),
                         runtime_address=format_address(bp.runtime_address),
+                        planted=self._bridge.is_breakpoint_planted(bp.runtime_address),
                     )
                     for bp in self._breakpoints.values()
                 ],

@@ -555,6 +555,40 @@ class DesktopApi:
         except DebugBridgeError as exc:
             return _error_envelope("DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc))
 
+    def debug_disassemble_at(
+        self, session_id: str, address: str, count: int = 40
+    ) -> dict[str, Any]:
+        """Mirrors `GET /dynamic/sessions/{id}/disassembly/at` - see
+        `app.dynamic.session.DebugSession.disassemble_at`'s docstring (the
+        Ctrl+G "jump into a loaded DLL" leg, an explicit address rather than
+        the current PC)."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+
+        parsed_address = try_parse_address(address)
+        if parsed_address is None:
+            return _error_envelope(
+                "DYNAMIC_INVALID_ADDRESS", "Địa chỉ không hợp lệ", f"address={address}"
+            )
+
+        try:
+            return _dump(session.disassemble_at(parsed_address, min(max(count, 1), 200)))
+        except DynamicSessionError as exc:
+            return _error_envelope(exc.code, exc.message)
+        except DebugBridgeError as exc:
+            return _error_envelope("DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc))
+
+    def debug_list_modules(self, session_id: str) -> dict[str, Any] | list[dict[str, Any]]:
+        """Mirrors `GET /dynamic/sessions/{id}/modules` - see
+        `app.dynamic.session.DebugSession.list_modules`'s docstring."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+        return [_dump(module) for module in session.list_modules()]
+
     def debug_continue(self, session_id: str) -> dict[str, Any]:
         try:
             session = self._debug_store.get(session_id)

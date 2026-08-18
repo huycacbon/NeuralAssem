@@ -647,10 +647,15 @@ Full spec/safety constraints: [`docs/dynamic-analysis-spec.md`](docs/dynamic-ana
   analyzer's coverage, e.g. `ntdll`/`kernel32`), it disassembles live from the running process
   instead of using static data — breakpoints work in both cases (a static address inside the
   analysed module, or a runtime address outside it).
-- **Ctrl+G "go to address"** (x64dbg-style) in Assembly View: jumps to a row already on screen, or
-  type an address/`sub_<hex>` name not currently shown — the app looks up whichever static
-  function contains it, fetches its CFG, and switches the view to it, even while currently looking
-  at live disassembly of a system module.
+- **Ctrl+G "go to address"** (x64dbg-style) in Assembly View, three tiers: (1) a row already on
+  screen; (2) not shown yet but a static function contains that address - fetches its CFG and
+  switches the view to it; (3) no static function covers it either, but a debug session is open -
+  live-disassembles directly at that address if it falls inside any *currently loaded* module
+  (including a system one like `ntdll`, and it doesn't need to be where the PC currently is)
+  before finally giving up with an error.
+- **Modules** (x64dbg-style): every module currently mapped in the debuggee - the main EXE and
+  each DLL loaded, including ones loaded well after attach - base address + file path, refreshed
+  after every step/continue.
 - **Registers & flags**: read and **edit** register values (x86 and x64) and individual EFLAGS bits
   (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — after editing, the next Step Into/Step Over uses the edited value
   immediately.
@@ -661,10 +666,17 @@ Full spec/safety constraints: [`docs/dynamic-analysis-spec.md`](docs/dynamic-ana
   address (ASLR-compensated) — the underlying data used for API calls/breakpoints still uses the
   static coordinate space unchanged. Markdown export while debugging also shows real runtime
   addresses, not static ones.
+- **"Pending" breakpoints**: a breakpoint set on an address inside a module that hasn't loaded yet
+  (a DLL to be `LoadLibrary`'d later) is still recorded, shown with a ⏳ mark in the Breakpoints
+  list - automatically (re-)planted on every Continue until that module loads, no extra action
+  needed. When a module unloads (`FreeLibrary`), any breakpoint planted inside its address range
+  is cleaned up automatically so it can't misfire into whatever unrelated module the OS happens to
+  map over that same freed range next.
 
 **Not yet available / still limited:** writing arbitrary memory (`write_memory` exists at the
 bridge layer but has no API/UI yet), attaching by `processName` instead of always launching fresh,
-stepping across more than one thread at once (only the current thread is followed).
+stepping across more than one thread at once (only the current thread is followed), pending
+breakpoints only re-arm on Continue (not yet on Step Into/Step Over).
 
 A mandatory warning modal shows before any debug session opens (once per page session), making
 clear this is real execution on the current machine, not a sandbox.

@@ -124,3 +124,9 @@ class ThreadPinnedDebugBridge(DebugBridge):
 
     def read_memory(self, address: int, size: int) -> bytes:
         return self._run(self._wrapped.read_memory, address, size)
+
+    def list_modules(self) -> list[ModuleInfo]:
+        return self._run(self._wrapped.list_modules)
+
+    def is_breakpoint_planted(self, runtime_address: int) -> bool:
+        return self._run(self._wrapped.is_breakpoint_planted, runtime_address)

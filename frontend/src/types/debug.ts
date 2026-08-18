@@ -34,6 +34,25 @@ export interface DebugBreakpoint {
    *  `backend/app/dynamic/session.py`'s `set_runtime_breakpoint` docstring. */
   staticAddress: string | null;
   runtimeAddress: string;
+  /** Whether the physical `0xCC` is currently written into the debuggee -
+   *  `false` most commonly means the module this address is inside hasn't
+   *  loaded yet (a DLL loaded later via `LoadLibrary`). Not an error state:
+   *  a pending breakpoint keeps retrying automatically on every subsequent
+   *  Continue until the module loads and it plants successfully. See
+   *  `backend/app/dynamic/models.py`'s `BreakpointModel.planted` docstring. */
+  planted: boolean;
+}
+
+/** One row of the debuggee's module list (x64dbg-style: main EXE + every
+ *  DLL currently mapped, including ones loaded well after attach) - fetched
+ *  on demand via `debugApi.listModules`, not part of `DebugSessionState`
+ *  itself (same convention as live disassembly). */
+export interface DebugModule {
+  loadBase: string;
+  moduleName: string;
+  /** `0` when the module's own `SizeOfImage` could not be read - not an
+   *  error, just "size unknown". */
+  size: number;
 }
 
 export interface DebugSessionState {

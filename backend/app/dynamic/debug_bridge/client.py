@@ -182,6 +182,28 @@ class DebugBridge(ABC):
         resolve one returns ``None`` rather than raising."""
         return None
 
+    # --- Module list extension point ---------------------------------------
+    # Added at explicit user request ("similar to x64dbg" for module/DLL
+    # handling): a debuggee is very rarely just "one module" for long - every
+    # DLL it loads (including ones loaded well after the initial attach, via
+    # LoadLibrary) is a real, separate module a user may want to see, jump
+    # into, or set a breakpoint in. Concrete with an empty-list default so a
+    # bridge that doesn't track this doesn't have to implement it.
+    def list_modules(self) -> list[ModuleInfo]:
+        return []
+
+    def is_breakpoint_planted(self, runtime_address: int) -> bool:
+        """Whether the software breakpoint at `runtime_address` currently has
+        its physical `0xCC` written into the debuggee - `False` doesn't mean
+        "broken", it usually means "address not mapped yet" (most commonly:
+        the breakpoint targets a DLL that hasn't loaded - see
+        `Win32DebugBridge._plant_breakpoint`'s docstring). Bridges plant
+        breakpoints lazily inside `go()`, so this only reflects the *last*
+        resume's outcome, not a live check. Default `True` (matches this
+        method's absence on every bridge that predates it - no regression in
+        UI-shown status for a bridge that never had this concept)."""
+        return True
+
     # --- Memory dump extension point --------------------------------------
     # Added at explicit user request: view raw bytes at an arbitrary address
     # with a chosen size, the same "Dump"/`db` capability every other

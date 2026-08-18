@@ -83,6 +83,14 @@ class FakeDebugBridge(DebugBridge):
         # (which needs a live dbgeng target - see that class's `go` docstring
         # for why the step-loop workaround this wiring feeds exists at all).
         self.last_go_breakpoint_addresses: frozenset[int] | None = None
+        # Module list (x64dbg-style) - empty by default like the real
+        # `DebugBridge.list_modules` default; tests populate this directly.
+        self.modules: list[ModuleInfo] = []
+        # Breakpoint "planted" status - `True` by default (matches
+        # `DebugBridge.is_breakpoint_planted`'s own default), tests override
+        # per-address via `unplanted_addresses` to simulate a pending
+        # breakpoint (module not loaded yet).
+        self.unplanted_addresses: set[int] = set()
 
     def connect(self, host: str, port: int, timeout_seconds: float) -> None:
         if self.fail_connect:
@@ -165,6 +173,12 @@ class FakeDebugBridge(DebugBridge):
 
     def disconnect(self) -> None:
         self.disconnected = True
+
+    def list_modules(self) -> list[ModuleInfo]:
+        return list(self.modules)
+
+    def is_breakpoint_planted(self, runtime_address: int) -> bool:
+        return runtime_address not in self.unplanted_addresses
 
 
 class TestDebugSession:
@@ -406,6 +420,72 @@ class TestDebugSession:
 
         with pytest.raises(DebugBridgeError):
             session.disassemble_current(10)
+
+    def test_disassemble_at_uses_the_requested_address_not_current_pc(self) -> None:
+        """The Ctrl+G "jump into a loaded DLL" leg - `disassemble_at` must
+        disassemble the *given* address, unlike `disassemble_current` which
+        always follows the debugger's PC."""
+        bridge = FakeDebugBridge(load_base=0x7FF600000000)
+        bridge.eip = 0x7FF600001234  # current PC - must NOT be what gets disassembled
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        result = session.disassemble_at(0x7FFD00005000, 4)
+
+        assert result.runtime_address == "0x7ffd00005000"
+        assert len(result.instructions) == 4
+        assert result.instructions[0].address == "0x7ffd00005000"
+
+    def test_disassemble_at_before_attach_raises(self) -> None:
+        bridge = FakeDebugBridge()
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+
+        with pytest.raises(DynamicSessionError) as excinfo:
+            session.disassemble_at(0x7FFD00005000, 10)
+        assert excinfo.value.code == "DYNAMIC_NOT_STOPPED"
+
+    def test_list_modules_translates_bridge_module_info(self) -> None:
+        bridge = FakeDebugBridge(load_base=0x7FF600000000)
+        bridge.modules = [
+            ModuleInfo(load_base=0x7FF600000000, module_name="sample.exe", size=0x27000),
+            ModuleInfo(load_base=0x7FFD21180000, module_name=r"C:\Windows\SYSTEM32\ntdll.dll", size=0x266000),
+        ]
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        modules = session.list_modules()
+
+        assert len(modules) == 2
+        assert modules[0].load_base == "0x7ff600000000"
+        assert modules[0].module_name == "sample.exe"
+        assert modules[0].size == 0x27000
+        assert modules[1].module_name == r"C:\Windows\SYSTEM32\ntdll.dll"
+
+    def test_list_modules_empty_by_default(self) -> None:
+        bridge = FakeDebugBridge()
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        assert session.list_modules() == []
+
+    def test_snapshot_state_reports_breakpoint_planted_status(self) -> None:
+        """A breakpoint the bridge hasn't (yet) been able to physically plant
+        - most commonly because it targets a DLL that hasn't loaded yet -
+        must surface as `planted: false`, not silently look identical to an
+        active one (see `BreakpointModel.planted`'s docstring)."""
+        bridge = FakeDebugBridge(load_base=0x7FF600000000)
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+        active = session.set_breakpoint(0x401000)
+        pending_target = 0x7FFD00005000
+        bridge.unplanted_addresses = {pending_target}
+        pending = session.set_runtime_breakpoint(pending_target)
+
+        state = session.snapshot_state()
+
+        by_id = {bp.id: bp for bp in state.breakpoints}
+        assert by_id[active.id].planted is True
+        assert by_id[pending.id].planted is False
 
     def test_set_register_writes_through_bridge_and_snapshot_reflects_it(self) -> None:
         bridge = FakeDebugBridge()

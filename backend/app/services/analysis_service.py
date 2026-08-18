@@ -37,7 +37,11 @@ from app.models.analysis import (
 )
 from app.models.graph import Graph
 from app.repositories.base import AnalysisRepository
-from app.services.export_service import build_full_markdown_export, build_markdown_export
+from app.services.export_service import (
+    build_full_markdown_export,
+    build_function_markdown_export,
+    build_markdown_export,
+)
 from app.services.file_service import received_upload
 from app.utils.address import format_address, function_node_id, try_parse_address
 
@@ -480,6 +484,23 @@ class AnalysisService:
         see `export_service.build_full_markdown_export`'s docstring."""
         record = self._require(analysis_id)
         return build_full_markdown_export(record)
+
+    def export_function_markdown(self, analysis_id: str, address: str) -> str | None:
+        """Compact Markdown for exactly one function - full disassembly and
+        pseudocode (if available), not risk-filtered like the whole-analysis
+        exports. `None` if the function doesn't exist (mirrors
+        `get_function`/`decompile_function`'s not-found convention). Does not
+        decompile anything itself - a function without pseudocode yet just
+        reports why, same as the other export variants."""
+        record = self._require(analysis_id)
+        parsed = try_parse_address(address)
+        if parsed is None:
+            return None
+        detail = record.functions.get(format_address(parsed))
+        if detail is None:
+            return None
+        cfg = self.get_function_cfg(analysis_id, address)
+        return build_function_markdown_export(record, detail, cfg)
 
     def expand(self, analysis_id: str, address: str, max_nodes: int = 60) -> Graph | None:
         record = self._require(analysis_id)

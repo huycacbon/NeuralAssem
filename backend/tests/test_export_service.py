@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from app.analyzers.angr_analyzer import AnalysisArtifacts
+from app.analyzers.cfg_builder import build_function_cfg
 from app.services.analysis_service import _build_record
 from app.services.export_service import (
     RISK_DISCLAIMER,
     build_full_markdown_export,
+    build_function_markdown_export,
     build_markdown_export,
 )
 from tests.conftest import make_function
@@ -203,6 +205,75 @@ class TestFullCodeAppendix:
         # `build_markdown_export`'s MAX_CODE_APPENDIX_FUNCTIONS (25) would cap
         # this well below 60 - the full export must not.
         assert markdown.count("### sub_") == 60
+
+
+class TestFunctionExport:
+    """`build_function_markdown_export` - a single function's report, not the
+    risk-curated/full whole-binary variants above."""
+
+    def test_header_and_metadata(self, sample_artifacts: AnalysisArtifacts) -> None:
+        record = _record(sample_artifacts)
+        function = record.functions["0x401300"]  # multiply: risk 10, calls, strings
+        markdown = build_function_markdown_export(record, function, cfg=None)
+        assert "# Function: multiply" in markdown
+        assert "`0x401300`" in markdown
+        assert "Risk score: 10" in markdown
+        assert "Calls: CreateRemoteThread" in markdown
+        assert "http://example.invalid/payload" in markdown
+        assert RISK_DISCLAIMER in markdown
+
+    def test_disassembly_rendered_from_a_real_cfg(self, sample_artifacts: AnalysisArtifacts) -> None:
+        record = _record(sample_artifacts)
+        function = record.functions["0x401100"]  # calculate: has real blocks/instructions
+        cfg = build_function_cfg(sample_artifacts, 0x401100)
+        markdown = build_function_markdown_export(record, function, cfg)
+        assert "```asm" in markdown
+        assert "0x401100:" in markdown
+        assert "cmp" in markdown
+        assert "eax, 0xa" in markdown
+
+    def test_missing_cfg_reports_explicit_fallback_not_empty_fence(
+        self, sample_artifacts: AnalysisArtifacts
+    ) -> None:
+        record = _record(sample_artifacts)
+        function = record.functions["0x401300"]  # multiply: no blocks in this fixture
+        markdown = build_function_markdown_export(record, function, cfg=None)
+        assert "No disassembly available" in markdown
+        assert "```asm" not in markdown
+
+    def test_available_pseudocode_is_included_verbatim(self) -> None:
+        fn = make_function(0x401000, "main")
+        fn.pseudocode = "int main(void) {\n    return 0;\n}"
+        fn.pseudocode_status = "available"
+        artifacts = AnalysisArtifacts(
+            architecture="x86",
+            bits=32,
+            entry_point=0x401000,
+            image_base=0x400000,
+            binary_format="PE",
+            functions={0x401000: fn},
+        )
+        record = _record(artifacts)
+        markdown = build_function_markdown_export(record, record.functions["0x401000"], cfg=None)
+        assert "```c" in markdown
+        assert "return 0;" in markdown
+
+    def test_missing_pseudocode_explains_why_instead_of_silently_omitting(
+        self, sample_artifacts: AnalysisArtifacts
+    ) -> None:
+        record = _record(sample_artifacts)
+        function = record.functions["0x401300"]  # never decompiled in this fixture
+        markdown = build_function_markdown_export(record, function, cfg=None)
+        assert "No pseudocode available" in markdown
+
+    def test_only_the_requested_function_appears_not_the_whole_binary(
+        self, sample_artifacts: AnalysisArtifacts
+    ) -> None:
+        record = _record(sample_artifacts)
+        function = record.functions["0x401300"]  # multiply
+        markdown = build_function_markdown_export(record, function, cfg=None)
+        assert "calculate" not in markdown
+        assert "orphan" not in markdown
 
 
 class TestRobustness:

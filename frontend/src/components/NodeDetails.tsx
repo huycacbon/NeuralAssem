@@ -60,6 +60,10 @@ interface NodeDetailsProps {
   onFocusAddress: (address: string) => void;
   onFilterByApi: (nodeId: string) => void;
   onDecompile: (address: string) => void;
+  /** Downloads a compact Markdown report for exactly the selected function
+   *  (full disassembly + pseudocode, not risk-filtered) - see
+   *  `analysisApi.exportFunctionMarkdown`'s docstring. */
+  onExportFunction: (address: string) => void;
   /** Live debug session, if one is open - rendered as its own section,
    *  independent of the selected node's kind (see DebugPanel.tsx). */
   debugSession: DebugSessionState | null;
@@ -85,6 +89,7 @@ function FunctionView({
   onExpand,
   onFocusAddress,
   onDecompile,
+  onExportFunction,
 }: {
   node: GraphNode;
   rebaseDelta: number | null;
@@ -97,6 +102,7 @@ function FunctionView({
   onExpand: (address: string) => void;
   onFocusAddress: (address: string) => void;
   onDecompile: (address: string) => void;
+  onExportFunction: (address: string) => void;
 }): JSX.Element {
   const { openCopyMenu } = useCopyMenu();
   // -- Disassembly <-> Pseudocode sync (IDA-style dual pane: both boxes are
@@ -219,6 +225,15 @@ function FunctionView({
           {node.address && (
             <button type="button" onClick={() => onExpand(node.address as string)}>
               Expand 1 hop
+            </button>
+          )}
+          {node.address && (
+            <button
+              type="button"
+              onClick={() => onExportFunction(node.address as string)}
+              title="Tải Markdown gọn cho riêng hàm này - disassembly + pseudocode"
+            >
+              Xuất Markdown hàm này
             </button>
           )}
         </div>
@@ -624,6 +639,7 @@ export function NodeDetails({
   onFocusAddress,
   onFilterByApi,
   onDecompile,
+  onExportFunction,
   debugSession,
   debugLoading,
   debugError,
@@ -686,6 +702,7 @@ export function NodeDetails({
             onExpand={onExpand}
             onFocusAddress={onFocusAddress}
             onDecompile={onDecompile}
+            onExportFunction={onExportFunction}
           />
         )}
 

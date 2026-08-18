@@ -898,6 +898,28 @@ export default function App(): JSX.Element {
     }
   }, [analysis, addBanner, rebaseDelta]);
 
+  /** Same idea as `handleExport`, scoped to one function - not risk-filtered
+   *  like the whole-analysis exports, since there is only one function to
+   *  show either way. Does not decompile anything first (unlike
+   *  `handleExportFull`) - a function without pseudocode yet just reports
+   *  why in the exported file, same as the UI's own "Not decompiled" state. */
+  const handleExportFunction = useCallback(
+    async (address: string) => {
+      if (!analysis) return;
+      try {
+        const { filename, content } = await analysisApi.exportFunctionMarkdown(
+          analysis.analysisId,
+          address,
+          rebaseDelta,
+        );
+        downloadTextFile(filename, content);
+      } catch (error) {
+        if (error instanceof ApiError) addBanner(error.message, 'error');
+      }
+    },
+    [analysis, addBanner, rebaseDelta],
+  );
+
   const handleExportFull = useCallback(async () => {
     if (!analysis || exportingFull) return;
     setExportingFull(true);
@@ -1089,6 +1111,7 @@ export default function App(): JSX.Element {
           onFocusAddress={focusNodeByAddress}
           onFilterByApi={(nodeId) => updateFilter('apiFilter', nodeId)}
           onDecompile={(address) => void handleDecompile(address)}
+          onExportFunction={(address) => void handleExportFunction(address)}
           debugSession={debug.session}
           debugLoading={debug.loading}
           debugError={debug.error}

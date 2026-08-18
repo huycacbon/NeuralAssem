@@ -284,6 +284,11 @@ Mở <http://127.0.0.1:5173>. API docs tại <http://127.0.0.1:8000/docs>.
    phút với binary nhiều function — nút tự vô hiệu hoá và đổi nhãn trong lúc chạy. Phù hợp khi
    cần một bản dump đầy đủ (đọc thủ công, lưu trữ, hoặc đưa vào một tool khác) hơn là một báo
    cáo gọn để dán vào AI — xem mục 8.
+10. **Xuất Markdown hàm này**: nút trong panel chi tiết (khi chọn một function) — tải về báo cáo
+    `.md` cho **đúng một hàm** đang xem, gồm đầy đủ disassembly và pseudocode (nếu có), không lọc
+    theo risk vì chỉ có một hàm. Không tự decompile gì thêm — hàm chưa decompile thì file chỉ ghi
+    rõ lý do. Nhỏ gọn hơn hẳn `/export.md`, hợp khi chỉ muốn hỏi AI về đúng một hàm cụ thể thay vì
+    cả binary — xem mục 8.
 
 ### Bộ lọc
 
@@ -311,6 +316,7 @@ Bộ lọc **không xóa dữ liệu gốc** — chỉ thay đổi phần tử �
 | `GET` | `/api/analysis/{id}/functions/{addr}` | Chi tiết một function |
 | `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | CFG của function (lazy, kèm instruction) |
 | `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | Decompile on-demand (angr), no-op nếu đã có sẵn |
+| `GET` | `/api/analysis/{id}/functions/{addr}/export.md` | Báo cáo Markdown cho riêng một function (xem mục 7, bước 10) |
 | `POST` | `/api/analysis/{id}/decompile-all` | Decompile mọi function còn thiếu, không giới hạn (có thể mất vài phút) |
 | `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
 | `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |

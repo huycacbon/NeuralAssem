@@ -82,6 +82,7 @@ interface DesktopBridge {
   get_function(analysisId: string, address: string): Promise<unknown>;
   decompile_function(analysisId: string, address: string): Promise<unknown>;
   get_function_cfg(analysisId: string, address: string): Promise<unknown>;
+  export_function_markdown(analysisId: string, address: string): Promise<unknown>;
   get_call_graph(
     analysisId: string,
     depth: number,
@@ -398,6 +399,48 @@ export const analysisApi = {
       { method: 'POST' },
     );
     return handle<FunctionDetail>(response);
+  },
+
+  /**
+   * Compact Markdown for exactly one function - full disassembly and
+   * pseudocode (if available), not risk-filtered like `exportMarkdown`/
+   * `exportMarkdownFull`. Same `{filename, content}` + `rebaseDelta`
+   * convention as those two - see `exportMarkdown`'s docstring.
+   */
+  async exportFunctionMarkdown(
+    analysisId: string,
+    address: string,
+    rebaseDelta?: number | null,
+  ): Promise<{ filename: string; content: string }> {
+    if (isDesktop()) {
+      const result = await callBridge<{ filename: string; content: string }>(async () =>
+        (await getBridge()).export_function_markdown(analysisId, address),
+      );
+      return { ...result, content: rebaseExportedAddresses(result.content, rebaseDelta) };
+    }
+    let response: Response;
+    try {
+      response = await fetch(
+        `${API_BASE_URL}/api/analysis/${analysisId}/functions/${address}/export.md`,
+      );
+    } catch (error) {
+      throw new ApiError(
+        {
+          code: 'NETWORK_ERROR',
+          message: 'Không kết nối được tới backend',
+          details: `Kiểm tra backend đang chạy tại ${API_BASE_URL || window.location.origin}`,
+        },
+        0,
+      );
+    }
+    if (!response.ok) {
+      await handle(response); // throws the structured ApiError
+    }
+    const content = await response.text();
+    return {
+      filename: `function-${address.replace(/^0x/i, '')}.md`,
+      content: rebaseExportedAddresses(content, rebaseDelta),
+    };
   },
 
   async getCallGraph(

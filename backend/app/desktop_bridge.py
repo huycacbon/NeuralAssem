@@ -231,6 +231,18 @@ class DesktopApi:
             return _not_found_function(address)
         return _dump(graph)
 
+    def export_function_markdown(self, analysis_id: str, address: str) -> dict[str, Any]:
+        """Same compact single-function report as the web deployment's
+        `GET .../functions/{addr}/export.md`, returned as `{filename, content}`
+        like `export_markdown`/`export_markdown_full` above."""
+        try:
+            markdown = self._service.export_function_markdown(analysis_id, address)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+        if markdown is None:
+            return _not_found_function(address)
+        return {"filename": f"function-{address.replace('0x', '')}.md", "content": markdown}
+
     def get_call_graph(
         self,
         analysis_id: str,

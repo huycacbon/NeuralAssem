@@ -215,6 +215,36 @@ def get_function_cfg(
     return graph
 
 
+@router.get("/{analysis_id}/functions/{function_address}/export.md")
+def export_function_markdown(
+    analysis_id: str, function_address: str, service: ServiceDep
+) -> Response:
+    """Compact Markdown for exactly one function - full disassembly and
+    pseudocode (if available), not risk-filtered like `/export.md` or
+    `/export-full.md`. Does not decompile anything itself - see
+    `app.services.export_service.build_function_markdown_export`.
+    """
+    try:
+        markdown = service.export_function_markdown(analysis_id, function_address)
+    except AnalysisNotFound as exc:
+        raise _not_found(analysis_id) from exc
+
+    if markdown is None:
+        raise _error(
+            404,
+            "FUNCTION_NOT_FOUND",
+            "Không tìm thấy function tại địa chỉ này",
+            f"address={function_address}",
+        )
+
+    filename = f"function-{function_address.replace('0x', '')}.md"
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{analysis_id}/call-graph", response_model=Graph)
 def get_call_graph(
     analysis_id: str,

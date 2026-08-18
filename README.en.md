@@ -288,6 +288,12 @@ Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
    several minutes on a binary with many functions — the button disables itself and changes its
    label while running. Useful when you want a complete dump (to read manually, archive, or feed
    into another tool) rather than a compact report meant for pasting into an AI — see section 8.
+10. **Export Markdown for this function**: a button in the details panel (when a function is
+    selected) — downloads a `.md` report for **exactly one** function, with full disassembly and
+    pseudocode (if available), not risk-filtered since there is only one function anyway. Does not
+    decompile anything itself - a function without pseudocode yet just reports why in the file.
+    Much smaller than `/export.md`, useful when you want to ask an AI about one specific function
+    rather than the whole binary — see section 8.
 
 ### Filters
 
@@ -315,6 +321,7 @@ Filters **never delete the underlying data** — they only change what is curren
 | `GET` | `/api/analysis/{id}/functions/{addr}` | One function's details |
 | `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | Function CFG (lazy, with instructions) |
 | `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | On-demand decompile (angr), no-op if already done |
+| `GET` | `/api/analysis/{id}/functions/{addr}/export.md` | Markdown report for one function (see section 7, step 10) |
 | `POST` | `/api/analysis/{id}/decompile-all` | Decompile every remaining function, no cap (can take minutes) |
 | `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
 | `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |

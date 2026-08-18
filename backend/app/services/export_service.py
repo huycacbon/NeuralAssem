@@ -19,6 +19,7 @@ Design goals, in priority order:
 from __future__ import annotations
 
 from app.models.analysis import AnalysisRecord, FunctionDetail
+from app.models.graph import Graph
 from app.utils.address import try_parse_address
 
 #: Hard caps so one huge binary cannot produce an unbounded document.
@@ -343,6 +344,84 @@ def build_full_markdown_export(record: AnalysisRecord) -> str:
         _full_code_appendix(record),
     ]
     return "\n\n---\n\n".join(section for section in sections if section)
+
+
+def _function_disassembly_block(cfg: Graph | None) -> str:
+    """Fenced `asm` block for one function's disassembly, block by block -
+    same shape as the UI's disassembly view, condensed to plain text. `None`/
+    empty `cfg` (import thunk/stub, or the CFG genuinely couldn't be built)
+    gets an explanatory sentence instead of an empty fence."""
+    blocks = [node for node in (cfg.nodes if cfg else []) if node.kind == "basic_block"]
+    if not blocks:
+        return "_No disassembly available (import thunk/stub, or no basic blocks recovered)._"
+
+    blocks.sort(key=lambda node: try_parse_address(node.address) or 0)
+    lines = ["```asm"]
+    for block in blocks:
+        marker = " ; entry" if block.metadata.get("isFunctionStart") else ""
+        lines.append(f"{block.address}:{marker}")
+        for insn in block.metadata.get("instructions", []):
+            operands = insn.get("operands", "")
+            lines.append(f"    {insn['address']}  {insn['mnemonic']}{' ' + operands if operands else ''}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
+def build_function_markdown_export(
+    record: AnalysisRecord, function: FunctionDetail, cfg: Graph | None
+) -> str:
+    """Compact Markdown for exactly *one* function - full disassembly and full
+    pseudocode (if available), no risk-based filtering since there is only
+    one function to show. Meant for pasting a single function's context into
+    an AI chat without dragging in the rest of the binary (`build_markdown_export`
+    /`build_full_markdown_export` are for "the whole analysis"), or for handing
+    a colleague one function without the full report - see
+    `POST .../functions/{addr}/export.md`.
+    """
+    lines = [
+        f"# Function: {function.name}",
+        "",
+        f"> {RISK_DISCLAIMER}",
+        "",
+        f"- File: {record.file.name}",
+        f"- Address: `{function.address}`" + (" (entry point)" if function.is_entry_point else ""),
+        f"- Size: {function.size} bytes" if function.size is not None else "- Size: unknown",
+        f"- Basic blocks: {function.block_count} | Callers: {function.caller_count} "
+        f"| Callees: {function.callee_count}",
+        f"- Risk score: {function.risk_score}"
+        + (f" — {'; '.join(function.risk_reasons)}" if function.risk_reasons else ""),
+    ]
+    if function.imported_apis:
+        lines.append(f"- Calls: {', '.join(function.imported_apis)}")
+    if function.strings:
+        values = [item.value for item in function.strings[:MAX_STRINGS_PER_FUNCTION]]
+        omitted = len(function.strings) - len(values)
+        suffix = f" (+{omitted} more - see UI)" if omitted > 0 else ""
+        lines.append(f"- Referenced strings: {', '.join(values)}{suffix}")
+
+    lines.append("")
+    lines.append("## Disassembly")
+    lines.append("")
+    lines.append(_function_disassembly_block(cfg))
+
+    lines.append("")
+    lines.append("## Pseudocode")
+    lines.append("")
+    if function.pseudocode_status == "available" and function.pseudocode:
+        code, was_truncated = _truncate_code(function.pseudocode, MAX_FULL_CODE_LINES_PER_FUNCTION)
+        lines.append("```c")
+        lines.append(code)
+        lines.append("```")
+        if was_truncated:
+            lines.append(
+                f"*(pseudocode truncated at {MAX_FULL_CODE_LINES_PER_FUNCTION} lines - "
+                "see UI for the full function.)*"
+            )
+    else:
+        note = function.pseudocode_note or "Not decompiled yet."
+        lines.append(f"_No pseudocode available: {note}_")
+
+    return "\n".join(lines)
 
 
 def build_markdown_export(record: AnalysisRecord) -> str:

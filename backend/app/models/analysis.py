@@ -18,6 +18,17 @@ class FileInfo(CamelModel):
     entry_point: str
     format: str = "PE"
     bits: int = 32
+    #: The PE's own preferred `ImageBase` (Optional Header) - every "static"
+    #: address shown elsewhere in the app (function list, graphs, CFG,
+    #: `entryPoint` above) is already expressed in this coordinate space, so
+    #: this is what a user needs to compute a `module+RVA` expression
+    #: (`address - imageBase`) for pasting into x64dbg/WinDbg's own "go to"
+    #: box - those tools resolve `module+RVA` against *their own* attach's
+    #: real (ASLR-randomised, and therefore almost never numerically equal
+    #: to this app's own debug session) load base, so the raw static address
+    #: alone is not portable between two independently-launched debuggers,
+    #: only the RVA is.
+    image_base: str = "0x0"
 
 
 class ImportedApi(CamelModel):

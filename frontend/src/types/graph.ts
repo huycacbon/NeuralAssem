@@ -129,6 +129,13 @@ export interface FileInfo {
   entryPoint: string;
   format: string;
   bits: number;
+  /** The PE's own preferred `ImageBase` - every "static" address elsewhere
+   *  in the app (function list, graphs, CFG, `entryPoint` above) is already
+   *  expressed in this coordinate space. Subtract this from a static
+   *  address to get its RVA, the portable form for a `module+RVA`
+   *  expression x64dbg/WinDbg's own "go to" accepts - see
+   *  `utils/x64dbgExpression.ts`. */
+  imageBase: string;
 }
 
 export interface FunctionSummary {

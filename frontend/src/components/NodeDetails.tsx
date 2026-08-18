@@ -18,6 +18,7 @@ import type {
   RiskLevel,
 } from '@/types/graph';
 import { displayAddress } from '@/utils/addressDisplay';
+import { toX64dbgExpression } from '@/utils/x64dbgExpression';
 
 const RISK_DISCLAIMER =
   'Risk score là điểm heuristic để ưu tiên phân tích, không phải kết luận phát hiện mã độc.';
@@ -44,6 +45,11 @@ interface NodeDetailsProps {
    *  address used for lookups/API calls (onFocusAddress, onOpenCfg, ...)
    *  keeps using the original static value. */
   rebaseDelta: number | null;
+  /** PE preferred ImageBase + the binary's own file name, for the "copy dạng
+   *  x64dbg (module+offset)" menu item on static addresses - see
+   *  `utils/x64dbgExpression.ts`. `null` when there's no analysis loaded. */
+  imageBase: string | null;
+  fileName: string | null;
   functionDetail: FunctionDetail | null;
   loadingDetail: boolean;
   /** Full CFG of the selected function (fetched via the CFG endpoint), used
@@ -84,6 +90,8 @@ interface NodeDetailsProps {
 function FunctionView({
   node,
   rebaseDelta,
+  imageBase,
+  fileName,
   detail,
   loading,
   disassembly,
@@ -97,6 +105,8 @@ function FunctionView({
 }: {
   node: GraphNode;
   rebaseDelta: number | null;
+  imageBase: string | null;
+  fileName: string | null;
   detail: FunctionDetail | null;
   loading: boolean;
   disassembly: Graph | null;
@@ -109,6 +119,16 @@ function FunctionView({
   onExportFunction: (address: string) => void;
 }): JSX.Element {
   const { openCopyMenu } = useCopyMenu();
+
+  /** Copy-menu items for the `x64dbg (module+offset)` entry - `[]` when the
+   *  conversion doesn't apply (see `toX64dbgExpression`'s own docstring),
+   *  so callers can just spread this in without an extra null-check. */
+  const x64dbgCopyItem = (staticAddress: string | null): { label: string; value: string }[] => {
+    if (!fileName) return [];
+    const expr = toX64dbgExpression(staticAddress, imageBase, fileName);
+    return expr ? [{ label: 'dạng x64dbg (module+offset)', value: expr }] : [];
+  };
+
   // -- Disassembly <-> Pseudocode sync (IDA-style dual pane: both boxes are
   // always visible, never a toggle between the two - hovering a row/line in
   // one instantly highlights its counterpart in the other, no click needed)
@@ -203,6 +223,7 @@ function FunctionView({
               node.address &&
               openCopyMenu(event, [
                 { label: 'địa chỉ', value: displayAddress(node.address, rebaseDelta) },
+                ...x64dbgCopyItem(node.address),
               ])
             }
           >
@@ -272,6 +293,7 @@ function FunctionView({
                     onContextMenu={(event) =>
                       openCopyMenu(event, [
                         { label: 'địa chỉ block', value: displayAddress(block.address, rebaseDelta) },
+                        ...x64dbgCopyItem(block.address),
                       ])
                     }
                   >
@@ -305,6 +327,7 @@ function FunctionView({
                                 label: 'dòng lệnh',
                                 value: `${shownAddress}  ${insn.mnemonic} ${insn.operands}`.trim(),
                               },
+                              ...x64dbgCopyItem(insn.address),
                             ])
                           }
                         >
@@ -631,6 +654,8 @@ function ApiView({
 export function NodeDetails({
   node,
   rebaseDelta,
+  imageBase,
+  fileName,
   functionDetail,
   loadingDetail,
   functionDisassembly,
@@ -701,6 +726,8 @@ export function NodeDetails({
           <FunctionView
             node={node}
             rebaseDelta={rebaseDelta}
+            imageBase={imageBase}
+            fileName={fileName}
             detail={functionDetail}
             loading={loadingDetail}
             disassembly={functionDisassembly}

@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react';
 import { useCopyMenu } from '@/components/CopyContextMenu';
 import type { FunctionSummary, RiskLevel } from '@/types/graph';
 import { displayAddress } from '@/utils/addressDisplay';
+import { toX64dbgExpression } from '@/utils/x64dbgExpression';
 
 function riskLevelOf(score: number): RiskLevel {
   if (score >= 20) return 'high';
@@ -26,6 +27,11 @@ interface FunctionListProps {
    *  only: `fn.address` itself (used for selection/keys/API calls) stays a
    *  static address throughout. */
   rebaseDelta: number | null;
+  /** PE preferred ImageBase (`"0x400000"`-style) + the binary's own file
+   *  name, for the "copy dạng x64dbg (module+offset)" menu item - see
+   *  `utils/x64dbgExpression.ts`. `null` when there's no analysis loaded. */
+  imageBase: string | null;
+  fileName: string | null;
   onSelect: (fn: FunctionSummary) => void;
   onOpenCfg: (fn: FunctionSummary) => void;
 }
@@ -35,6 +41,8 @@ export function FunctionList({
   selectedAddress,
   loading,
   rebaseDelta,
+  imageBase,
+  fileName,
   onSelect,
   onOpenCfg,
 }: FunctionListProps): JSX.Element {
@@ -94,12 +102,19 @@ export function FunctionList({
             aria-selected={fn.address === selectedAddress}
             onClick={() => onSelect(fn)}
             onDoubleClick={() => onOpenCfg(fn)}
-            onContextMenu={(event) =>
-              openCopyMenu(event, [
+            onContextMenu={(event) => {
+              const items = [
                 { label: 'tên hàm', value: fn.name },
                 { label: 'địa chỉ', value: displayAddress(fn.address, rebaseDelta) },
-              ])
-            }
+              ];
+              const x64dbgExpr = fileName
+                ? toX64dbgExpression(fn.address, imageBase, fileName)
+                : null;
+              if (x64dbgExpr) {
+                items.push({ label: 'dạng x64dbg (module+offset)', value: x64dbgExpr });
+              }
+              openCopyMenu(event, items);
+            }}
             title="Click: focus node · Double-click: mở CFG · Chuột phải: copy"
           >
             <div className="fn-item-top">

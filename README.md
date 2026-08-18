@@ -289,6 +289,14 @@ Mở <http://127.0.0.1:5173>. API docs tại <http://127.0.0.1:8000/docs>.
     theo risk vì chỉ có một hàm. Không tự decompile gì thêm — hàm chưa decompile thì file chỉ ghi
     rõ lý do. Nhỏ gọn hơn hẳn `/export.md`, hợp khi chỉ muốn hỏi AI về đúng một hàm cụ thể thay vì
     cả binary — xem mục 8.
+11. **"Copy dạng x64dbg (module+offset)"**: mọi địa chỉ hiển thị trong app (Function List, Entry
+    point/Image base ở panel FILE, Address của function, header block, dòng disassembly) đều là
+    địa chỉ **static** — tính theo `ImageBase` mặc định trong PE header, không đổi giữa các lần
+    chạy. x64dbg chạy độc lập sẽ có base ngẫu nhiên khác (ASLR) mỗi lần launch, nên không thể so
+    trực tiếp địa chỉ tuyệt đối giữa app này và x64dbg. Chuột phải vào một địa chỉ, chọn mục này để
+    copy dạng `module.exe+RVA` — dán thẳng vào ô "Go to Expression" (Ctrl+G) của x64dbg, nó tự
+    tính đúng theo base thật của lần attach đó. Panel FILE cũng hiển thị sẵn `Image base` để tính
+    tay khi cần (`RVA = địa chỉ static − Image base`).
 
 ### Bộ lọc
 

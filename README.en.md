@@ -294,6 +294,15 @@ Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
     decompile anything itself - a function without pseudocode yet just reports why in the file.
     Much smaller than `/export.md`, useful when you want to ask an AI about one specific function
     rather than the whole binary — see section 8.
+11. **"Copy as x64dbg (module+offset)"**: every address shown in the app (Function List, Entry
+    point/Image base in the FILE panel, a function's Address, block headers, disassembly rows) is a
+    **static** address — computed from the PE's default `ImageBase`, unchanged across runs. A
+    separately-launched x64dbg gets a different, randomised base (ASLR) on every launch, so raw
+    absolute addresses aren't directly comparable between this app and x64dbg. Right-click any
+    address and pick this menu item to copy a `module.exe+RVA` expression — paste it straight into
+    x64dbg's "Go to Expression" box (Ctrl+G), which resolves it correctly against that session's
+    actual load base. The FILE panel also shows `Image base` directly for manual math when needed
+    (`RVA = static address − Image base`).
 
 ### Filters
 

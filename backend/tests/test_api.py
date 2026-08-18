@@ -93,6 +93,11 @@ class TestAnalysisReads:
         assert payload["analysisId"] == "test-analysis"
         assert payload["file"]["name"] == "fixture.exe"
         assert payload["file"]["entryPoint"] == "0x401000"
+        # `imageBase` - what a user needs to compute a `module+RVA` expression
+        # for x64dbg/WinDbg's own "go to", since a static address alone isn't
+        # portable to a separately-launched (ASLR-randomised) debugger - see
+        # `FileInfo.image_base`'s docstring.
+        assert payload["file"]["imageBase"] == "0x400000"
         assert payload["summary"]["functionCount"] == 5
         assert set(payload["callGraph"]) == {"nodes", "edges", "metadata"}
 

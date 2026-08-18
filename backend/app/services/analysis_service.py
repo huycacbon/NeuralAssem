@@ -158,6 +158,7 @@ def _build_record(
             entry_point=format_address(entry_point),
             format=artifacts.binary_format,
             bits=artifacts.bits,
+            image_base=format_address(artifacts.image_base),
         ),
         summary=summary,
         call_graph=build_call_graph(

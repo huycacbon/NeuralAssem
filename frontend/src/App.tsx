@@ -1121,6 +1121,8 @@ export default function App(): JSX.Element {
             selectedAddress={selectedNode?.address ?? null}
             loading={loadingFunctions}
             rebaseDelta={rebaseDelta}
+            imageBase={analysis?.file.imageBase ?? null}
+            fileName={analysis?.file.name ?? null}
             onSelect={handleSelectFunction}
             onOpenCfg={(fn) => void openFunctionCfg(fn.address)}
           />
@@ -1187,6 +1189,8 @@ export default function App(): JSX.Element {
         <NodeDetails
           node={selectedNode}
           rebaseDelta={rebaseDelta}
+          imageBase={analysis?.file.imageBase ?? null}
+          fileName={analysis?.file.name ?? null}
           functionDetail={functionDetail}
           loadingDetail={loadingDetail}
           functionDisassembly={functionDisassembly}

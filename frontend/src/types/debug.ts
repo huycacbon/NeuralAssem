@@ -11,6 +11,14 @@ export type DebugSessionStatus =
   | 'attached'
   | 'running'
   | 'break'
+  /** The debuggee process itself has terminated (ran to completion, or
+   *  crashed) - a terminal state, not an error in this app. Nothing further
+   *  can step/continue/read live state since there is no live process left
+   *  - see `backend/app/dynamic/session.py`'s `SessionStatus.EXITED`
+   *  docstring for the real bug this distinction fixes (every stop used to
+   *  collapse to `'break'`, making a process exit look identical to the
+   *  debugger legitimately, permanently frozen at one address). */
+  | 'exited'
   | 'disconnected'
   | 'error';
 

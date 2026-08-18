@@ -645,6 +645,11 @@ Toàn bộ spec/ràng buộc an toàn: [`docs/dynamic-analysis-spec.md`](docs/dy
   bấm Continue cho tới khi module đó load xong, không cần thao tác gì thêm. Khi module unload
   (`FreeLibrary`), breakpoint đã cấy trong vùng nhớ đó tự dọn để không "ám" nhầm vào module khác
   lỡ được nạp đè lên đúng dải địa chỉ vừa giải phóng.
+- **Trạng thái `exited`**: khi tiến trình debug tự thoát/kết thúc (chạy xong hoặc crash), status
+  chuyển hẳn sang `EXITED` thay vì trông giống một breakpoint bình thường — Step/Continue tự khoá
+  lại, kèm thông báo rõ ràng. (Trước đây mọi trường hợp dừng đều báo `BREAK` như nhau, kể cả khi
+  tiến trình đã chết — khiến debugger trông như "đứng hình" ở một địa chỉ ngẫu nhiên mãi mãi mà
+  không có lỗi nào hiện ra.)
 
 **Chưa có / còn hạn chế:** ghi memory tùy ý (`write_memory` có ở tầng bridge nhưng chưa có
 API/UI), attach theo `processName` thay vì luôn launch mới, step-over/step-into qua ranh giới

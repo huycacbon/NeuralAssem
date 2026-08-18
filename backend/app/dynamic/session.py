@@ -44,6 +44,20 @@ class SessionStatus(StrEnum):
     ATTACHED = "attached"
     RUNNING = "running"
     BREAK = "break"
+    #: The debuggee process itself has terminated (ran to completion, or
+    #: crashed) - not an error in *this app*, but a terminal state: nothing
+    #: further can step/continue/read live state, since there is no live
+    #: process left. See `go`/`step`'s docstrings for the real, live-confirmed
+    #: bug this distinction fixes - `go`/`step` used to unconditionally set
+    #: `BREAK` regardless of what actually happened, so a process exit looked
+    #: identical to a legitimate breakpoint stop: `GetThreadContext` on the
+    #: now-dead thread handle doesn't raise, it returns whatever context that
+    #: thread happened to have at its very last moment (confirmed live: a
+    #: stable address inside ntdll's own process-termination path, the same
+    #: address every time on this machine since system DLLs share one ASLR
+    #: base per boot) - Step/Continue clicked again just re-observed that
+    #: same frozen-looking state forever, with no error shown anywhere.
+    EXITED = "exited"
     DISCONNECTED = "disconnected"
     ERROR = "error"
 
@@ -324,16 +338,38 @@ class DebugSession:
 
     # -- execution control -------------------------------------------------
 
+    def _apply_stop_reason(self, reason: StopReason) -> None:
+        """Sets `self.status` (and, on a process exit, an explanatory
+        `_last_error`) from a bridge's `StopReason` - see
+        `SessionStatus.EXITED`'s docstring for the real, live-confirmed bug
+        this replaces: every `StopReason.kind` used to collapse to `BREAK`
+        here unconditionally, so a genuine process exit was indistinguishable
+        from a legitimate breakpoint/step stop - `snapshot_state()` kept
+        trying to read registers/RIP from the now-dead process on every
+        subsequent request, silently returning whatever stale context
+        `GetThreadContext` happened to report for the dead thread handle
+        instead of erroring, which looked exactly like the debugger being
+        permanently frozen at one address with no error shown anywhere.
+        `"timeout"` reverts to `RUNNING` - the debuggee is presumably still
+        executing, this resume call just gave up waiting for now."""
+        if reason.kind == "exited":
+            self.status = SessionStatus.EXITED
+            self._last_error = (
+                "Tiến trình đã kết thúc (thoát bình thường hoặc bị crash) - không thể "
+                "step/continue thêm. Bấm Disconnect để đóng phiên."
+            )
+        elif reason.kind == "timeout":
+            self.status = SessionStatus.RUNNING
+        else:
+            self.status = SessionStatus.BREAK
+
     def step(self, mode: str) -> None:
         with self._lock:
             self.touch()
             self.status = SessionStatus.RUNNING
             try:
-                if mode == "over":
-                    self._bridge.step_over()
-                else:
-                    self._bridge.step_into()
-                self.status = SessionStatus.BREAK
+                reason = self._bridge.step_over() if mode == "over" else self._bridge.step_into()
+                self._apply_stop_reason(reason)
             except Exception as exc:
                 self.status = SessionStatus.ERROR
                 self._last_error = str(exc)
@@ -355,7 +391,7 @@ class DebugSession:
                     bp.runtime_address for bp in self._breakpoints.values()
                 )
                 reason = self._bridge.go(timeout_seconds, breakpoint_addresses)
-                self.status = SessionStatus.BREAK
+                self._apply_stop_reason(reason)
                 return reason
             except Exception as exc:
                 self.status = SessionStatus.ERROR

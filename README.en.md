@@ -672,6 +672,11 @@ Full spec/safety constraints: [`docs/dynamic-analysis-spec.md`](docs/dynamic-ana
   needed. When a module unloads (`FreeLibrary`), any breakpoint planted inside its address range
   is cleaned up automatically so it can't misfire into whatever unrelated module the OS happens to
   map over that same freed range next.
+- **`exited` status**: when the debuggee terminates on its own (ran to completion, or crashed),
+  status switches to a dedicated `EXITED` state instead of looking like an ordinary breakpoint -
+  Step/Continue disable themselves, with a clear message. (Previously every kind of stop reported
+  `BREAK` the same way, including a dead process - the debugger looked permanently frozen at some
+  address forever, with no error shown anywhere.)
 
 **Not yet available / still limited:** writing arbitrary memory (`write_memory` exists at the
 bridge layer but has no API/UI yet), attaching by `processName` instead of always launching fresh,

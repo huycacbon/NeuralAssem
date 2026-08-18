@@ -107,6 +107,13 @@ export function DebugPanel({
 
   const gprRegisters = session.registers.filter((reg) => !FLAG_REGISTER_NAMES.has(reg.name));
   const flagRegisters = session.registers.filter((reg) => FLAG_REGISTER_NAMES.has(reg.name));
+  // Nothing left to step/continue/read once the debuggee itself has
+  // terminated - see `types/debug.ts`'s `DebugSessionStatus` docstring for
+  // the real bug this distinction fixes (every stop used to look like
+  // `'break'`, so these controls stayed enabled forever on a dead process,
+  // clicking them just re-observed the same frozen-looking state with no
+  // indication anything had actually ended).
+  const exited = session.status === 'exited';
 
   return (
     <div className="panel-section debug-panel">
@@ -156,13 +163,28 @@ export function DebugPanel({
       </dl>
 
       <div className="chip-row" style={{ marginTop: 8 }}>
-        <button type="button" disabled={loading} onClick={onStepInto}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để step' : undefined}
+          onClick={onStepInto}
+        >
           Step Into
         </button>
-        <button type="button" disabled={loading} onClick={onStepOver}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để step' : undefined}
+          onClick={onStepOver}
+        >
           Step Over
         </button>
-        <button type="button" disabled={loading} onClick={onContinue}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để tiếp tục' : undefined}
+          onClick={onContinue}
+        >
           Continue
         </button>
         <button type="button" disabled={loading} onClick={onDisconnect}>

@@ -770,8 +770,18 @@ class Win32DebugBridge(DebugBridge):
 
     def step_into(self) -> StopReason:
         self._rearm_if_pending()
-        self._resume_and_wait(30.0, single_step=True)
-        return StopReason(kind="step")
+        # Propagates whatever `_resume_and_wait` actually observed (`"step"`
+        # in the ordinary case, but also `"exited"`/`"timeout"` when the
+        # debuggee terminates or the wait deadline passes mid-step) instead
+        # of a hardcoded `"step"` - a previous version discarded this return
+        # value entirely, which meant single-stepping the process's own
+        # final instruction (a `ret` immediately followed by process exit,
+        # not unusual at all) reported "step" instead of "exited". See
+        # `DebugSession.SessionStatus.EXITED`'s docstring for why that
+        # distinction matters (a wrong status here made a normal process
+        # exit look like the debugger permanently freezing) - see
+        # `app.dynamic.session.SessionStatus.EXITED`'s docstring.
+        return self._resume_and_wait(30.0, single_step=True)
 
     def step_over(self) -> StopReason:
         """Steps one source-level "unit": if the current instruction is a
@@ -786,8 +796,11 @@ class Win32DebugBridge(DebugBridge):
         current = self.current_instruction_address()
         instruction_length = self._call_instruction_length(current)
         if instruction_length is None:
-            self._resume_and_wait(30.0, single_step=True)
-            return StopReason(kind="step")
+            # Same fix as `step_into` - propagate the real outcome instead of
+            # hardcoding "step" (this branch handles every non-CALL
+            # instruction, including a `ret` that happens to be the
+            # process's very last instruction).
+            return self._resume_and_wait(30.0, single_step=True)
 
         return_address = current + instruction_length
         planted_temp = return_address not in self._planted
@@ -799,7 +812,7 @@ class Win32DebugBridge(DebugBridge):
                 self._unplant_breakpoint(return_address)
                 if self._pending_rearm == return_address:
                     self._pending_rearm = None
-        return StopReason(kind=reason.kind if reason else "step")
+        return reason
 
     def _call_instruction_length(self, address: int) -> int | None:
         """`None` unless the instruction at `address` is a `CALL` - in

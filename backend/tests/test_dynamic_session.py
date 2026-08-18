@@ -91,6 +91,18 @@ class FakeDebugBridge(DebugBridge):
         # per-address via `unplanted_addresses` to simulate a pending
         # breakpoint (module not loaded yet).
         self.unplanted_addresses: set[int] = set()
+        # Overrides the `StopReason` `go`/`step_into`/`step_over` return when
+        # set - tests use this to simulate a process exit/timeout without a
+        # real bridge, matching what `Win32DebugBridge` can legitimately
+        # return from those same methods.
+        self.next_stop_reason: StopReason | None = None
+        # Call counters for `read_registers`/`read_stack`/
+        # `current_instruction_address` - tests assert these stay at 0 after
+        # a process exit, proving `snapshot_state` actually skips reading
+        # from a dead process instead of just happening not to crash on it.
+        self.read_registers_calls = 0
+        self.read_stack_calls = 0
+        self.current_instruction_address_calls = 0
 
     def connect(self, host: str, port: int, timeout_seconds: float) -> None:
         if self.fail_connect:
@@ -118,6 +130,8 @@ class FakeDebugBridge(DebugBridge):
         self.breakpoints.pop(breakpoint_id, None)
 
     def step_into(self) -> StopReason:
+        if self.next_stop_reason is not None:
+            return self.next_stop_reason
         self.eip += 1
         self.registers["eip"] = self.eip
         return StopReason(kind="step")
@@ -131,15 +145,20 @@ class FakeDebugBridge(DebugBridge):
         self.last_go_breakpoint_addresses = breakpoint_addresses
         if self.fail_go:
             raise DebugBridgeError("timeout giả lập")
+        if self.next_stop_reason is not None:
+            return self.next_stop_reason
         return StopReason(kind="breakpoint")
 
     def read_registers(self) -> dict[str, int]:
+        self.read_registers_calls += 1
         return dict(self.registers)
 
     def read_stack(self, max_frames: int) -> list[StackFrameInfo]:
+        self.read_stack_calls += 1
         return list(self.stack[:max_frames])
 
     def current_instruction_address(self) -> int:
+        self.current_instruction_address_calls += 1
         return self.eip
 
     def disassemble_range(self, address: int, instruction_count: int) -> list[LiveInstruction]:
@@ -348,6 +367,87 @@ class TestDebugSession:
         with pytest.raises(DebugBridgeError):
             session.go(1.0)
         assert session.status == SessionStatus.ERROR
+
+    def test_go_process_exit_sets_exited_status_not_break(self) -> None:
+        """Regression test for a real, live-confirmed bug: `go` used to set
+        `BREAK` unconditionally regardless of what actually happened, so a
+        genuine process exit was indistinguishable from a legitimate
+        breakpoint stop - `snapshot_state` kept trying to read
+        registers/RIP from the now-dead process on every subsequent request.
+        Confirmed live: `GetThreadContext` on the dead thread handle didn't
+        raise, it returned a stable, misleading address every time (see
+        `SessionStatus.EXITED`'s docstring) - Step/Continue clicked again
+        just re-observed that same frozen-looking state forever, silently,
+        with no error shown anywhere."""
+        bridge = FakeDebugBridge()
+        bridge.next_stop_reason = StopReason(kind="exited")
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        reason = session.go(5.0)
+
+        assert reason.kind == "exited"
+        assert session.status == SessionStatus.EXITED
+        assert session._last_error is not None  # noqa: SLF001 - asserting the explanation is set
+
+    def test_go_timeout_reverts_to_running_not_break(self) -> None:
+        """A timeout means the debuggee is presumably still executing, not
+        that the debugger actually stopped anywhere - must not look like a
+        legitimate `BREAK` (which `snapshot_state` would try to read live
+        state for)."""
+        bridge = FakeDebugBridge()
+        bridge.next_stop_reason = StopReason(kind="timeout")
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        session.go(5.0)
+
+        assert session.status == SessionStatus.RUNNING
+
+    def test_step_process_exit_sets_exited_status_not_break(self) -> None:
+        """Same fix as `go`'s, for `step` - a process can just as well exit
+        mid-step (stepping the final instruction before termination is not
+        unusual)."""
+        bridge = FakeDebugBridge()
+        bridge.next_stop_reason = StopReason(kind="exited")
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+
+        session.step("into")
+
+        assert session.status == SessionStatus.EXITED
+
+    def test_snapshot_state_after_exit_does_not_read_from_the_dead_process(self) -> None:
+        """The actual harm the wrong status used to cause: once exited,
+        `snapshot_state` must not call back into the bridge for
+        registers/stack/current-address at all - there is no live process
+        left to read from, and doing so anyway is what produced the
+        misleading frozen-looking state live (see this class's other
+        EXITED-related tests)."""
+        bridge = FakeDebugBridge()
+        session = DebugSession("s", "a", bridge, preferred_image_base=0x400000)
+        session.connect_and_attach("h", 1, None, None, 1.0)
+        session.snapshot_state()  # a normal, pre-exit snapshot - reads are fine here
+        assert bridge.current_instruction_address_calls > 0
+
+        bridge.next_stop_reason = StopReason(kind="exited")
+        session.go(5.0)
+        reads_before = (
+            bridge.read_registers_calls,
+            bridge.read_stack_calls,
+            bridge.current_instruction_address_calls,
+        )
+
+        state = session.snapshot_state()
+
+        assert (
+            bridge.read_registers_calls,
+            bridge.read_stack_calls,
+            bridge.current_instruction_address_calls,
+        ) == reads_before
+        assert state.runtime_address is None
+        assert state.registers == []
+        assert state.stack == []
 
     def test_idle_tracking_with_fake_clock(self) -> None:
         clock = _FakeClock()

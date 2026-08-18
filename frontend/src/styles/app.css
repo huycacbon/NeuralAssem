@@ -976,6 +976,14 @@
   color: var(--risk-high);
 }
 
+/* Terminal state (the debuggee itself ended), not an error in this app -
+   deliberately not styled like `.debug-status-error`'s alarming red, just
+   dimmed to read as "nothing more will happen here". */
+.debug-status-badge.debug-status-exited {
+  border-color: var(--text-faint);
+  color: var(--text-faint);
+}
+
 .memory-dump-listing {
   max-height: 320px;
 }

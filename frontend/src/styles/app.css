@@ -282,7 +282,7 @@
 }
 
 /* Full listing fills the scroll container itself, not a fixed max-height
-   box like the details-panel preview (.disasm-full) - the whole point here
+   box like the details-panel preview (.disasm-split) - the whole point here
    is maximum vertical room.
    `.disasm.assembly-listing` (both classes), not just `.assembly-listing` -
    this element carries both `disasm` and `assembly-listing` in its
@@ -343,14 +343,16 @@
 }
 
 /* Disassembly <-> Pseudocode sync in the function details panel (NodeDetails
-   FunctionView) - a row/line with a known counterpart in the other view gets
-   a pointer cursor and a faint left rail so the eye can tell which lines are
-   clickable before hovering; `.sync-flash` reuses the same flash keyframes
-   Ctrl+G uses in the debug assembly view, for one consistent "you just
-   landed here" cue across the app. */
+   FunctionView, two always-visible boxes, never a toggle) - a row/line with
+   a known counterpart in the other box gets a faint left rail so the eye can
+   tell which lines are hoverable before hovering. `.sync-hover` is applied
+   by React directly in step with mouseenter/mouseleave on the *other* box's
+   row/line (a bare CSS `:hover` cannot reach across to a different element),
+   so it appears and disappears instantly with the cursor - no animation,
+   unlike Ctrl+G's one-shot `.assembly-row-jumped` flash in the debug
+   assembly view, which fades on its own after a deliberate jump. */
 .disasm-row.sync-available,
 .pseudo-line.sync-available {
-  cursor: pointer;
   border-left: 2px solid var(--accent);
   padding-left: 4px;
   margin-left: -6px;
@@ -366,8 +368,9 @@
   word-break: break-word;
 }
 
-.sync-flash {
-  animation: assembly-row-jumped-flash 1.5s ease-out;
+.sync-hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px solid var(--accent);
 }
 
 /* Floating "go to address" input (Ctrl+G) - anchored to the top-right of
@@ -612,10 +615,12 @@
   color: var(--accent);
 }
 
-/* Whole-function disassembly preview in the function details panel: several
-   blocks stacked, so it gets more room than a single-block view. */
-.disasm-full {
-  max-height: 480px;
+/* Disassembly and Pseudocode in the function details panel: two separate,
+   always-visible boxes stacked on top of each other (not a toggle), so each
+   gets less height than the old single-box .disasm-full did - otherwise the
+   pair together would dwarf the rest of the panel. */
+.disasm-split {
+  max-height: 260px;
 }
 
 .disasm-block-header {
@@ -634,18 +639,13 @@
   margin-top: 0;
 }
 
-/* Disassembly / Pseudocode toggle above the code box. */
+/* Header above each of the two always-visible code boxes (Disassembly,
+   Pseudocode) in the function details panel. */
 .code-view-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.segmented.small button {
-  padding: 2px 8px;
-  font-size: 11px;
 }
 
 /* Pseudocode is prose-like C, not the fixed-column disassembly grid - wrap

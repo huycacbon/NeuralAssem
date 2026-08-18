@@ -255,17 +255,19 @@ Mở <http://127.0.0.1:5173>. API docs tại <http://127.0.0.1:8000/docs>.
 
 4. Panel trái: tìm kiếm function, xem summary, và chỉnh bộ lọc.
    Click một function để focus node; **double-click** để mở CFG.
-5. Panel phải: chi tiết function / basic block / API tùy node đang chọn.
-   Với function, có toggle **Disassembly | Pseudocode** — pseudocode là mã C giả lập
-   do `angr.analyses.Decompiler` tự sinh (heuristic, không đảm bảo đúng 100%), chỉ tính
-   sẵn tự động cho một số function ưu tiên (entry point, function có tên, risk cao) vì
-   decompile tốn thời gian hơn hẳn disassembly — xem "Giới hạn hiện tại". Với các function
-   còn lại, bấm **"Decompile hàm này"** để tạo pseudocode riêng ngay lúc đó (best-effort,
-   dùng lại chính phân tích angr đã có sẵn trong bộ nhớ, không cần phân tích lại từ đầu).
-   **Sync Disassembly ↔ Pseudocode** (kiểu IDA): dòng disassembly/pseudocode nào có viền
-   trái xanh là có ánh xạ hai chiều — click vào để nhảy sang dòng tương ứng ở view kia, tự
-   chuyển tab và highlight. Dựa trên `map_addr_to_pos` nội bộ của decompiler angr, nên
-   không phải dòng nào cũng có ánh xạ (khai báo biến, dấu ngoặc không có địa chỉ máy).
+5. Panel phải: chi tiết function / basic block / API tùy node đang chọn. Với function,
+   **Disassembly** và **Pseudocode** hiện thành hai khung riêng, luôn hiện song song (không
+   phải toggle) — pseudocode là mã C giả lập do `angr.analyses.Decompiler` tự sinh
+   (heuristic, không đảm bảo đúng 100%), chỉ tính sẵn tự động cho một số function ưu tiên
+   (entry point, function có tên, risk cao) vì decompile tốn thời gian hơn hẳn disassembly —
+   xem "Giới hạn hiện tại". Với các function còn lại, bấm **"Decompile hàm này"** để tạo
+   pseudocode riêng ngay lúc đó (best-effort, dùng lại chính phân tích angr đã có sẵn trong
+   bộ nhớ, không cần phân tích lại từ đầu).
+   **Sync Disassembly ↔ Pseudocode** (kiểu IDA): dòng nào có viền trái xanh là có ánh xạ hai
+   chiều — **di chuột tới** (không cần click) sẽ tự highlight ngay dòng tương ứng ở khung
+   kia, và tự cuộn tới nếu dòng đó đang ngoài tầm nhìn. Dựa trên `map_addr_to_pos` nội bộ của
+   decompiler angr, nên không phải dòng nào cũng có ánh xạ (khai báo biến, dấu ngoặc không có
+   địa chỉ máy).
 6. **Chuột phải để copy**: giá trị thanh ghi, địa chỉ (disassembly/pseudocode/function
    list/debug panel), tên hàm, tên block, dòng lệnh, dòng pseudocode — chuột phải vào giá
    trị cần copy, chọn đúng mục trong menu hiện ra.

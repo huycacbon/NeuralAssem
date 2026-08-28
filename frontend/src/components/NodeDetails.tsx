@@ -3,11 +3,12 @@
  * function, basic block, or API.
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import { DebugPanel } from '@/components/DebugPanel';
 import { MemoryDumpPanel } from '@/components/MemoryDumpPanel';
-import type { DebugSessionState, StepMode } from '@/types/debug';
+import type { DebugModule, DebugSessionState, StepMode } from '@/types/debug';
 import type {
   FunctionDetail,
   Graph,
@@ -17,6 +18,7 @@ import type {
   RiskLevel,
 } from '@/types/graph';
 import { displayAddress } from '@/utils/addressDisplay';
+import { toX64dbgExpression } from '@/utils/x64dbgExpression';
 
 const RISK_DISCLAIMER =
   'Risk score là điểm heuristic để ưu tiên phân tích, không phải kết luận phát hiện mã độc.';
@@ -43,6 +45,11 @@ interface NodeDetailsProps {
    *  address used for lookups/API calls (onFocusAddress, onOpenCfg, ...)
    *  keeps using the original static value. */
   rebaseDelta: number | null;
+  /** PE preferred ImageBase + the binary's own file name, for the "copy dạng
+   *  x64dbg (module+offset)" menu item on static addresses - see
+   *  `utils/x64dbgExpression.ts`. `null` when there's no analysis loaded. */
+  imageBase: string | null;
+  fileName: string | null;
   functionDetail: FunctionDetail | null;
   loadingDetail: boolean;
   /** Full CFG of the selected function (fetched via the CFG endpoint), used
@@ -59,6 +66,10 @@ interface NodeDetailsProps {
   onFocusAddress: (address: string) => void;
   onFilterByApi: (nodeId: string) => void;
   onDecompile: (address: string) => void;
+  /** Downloads a compact Markdown report for exactly the selected function
+   *  (full disassembly + pseudocode, not risk-filtered) - see
+   *  `analysisApi.exportFunctionMarkdown`'s docstring. */
+  onExportFunction: (address: string) => void;
   /** Live debug session, if one is open - rendered as its own section,
    *  independent of the selected node's kind (see DebugPanel.tsx). */
   debugSession: DebugSessionState | null;
@@ -70,11 +81,17 @@ interface NodeDetailsProps {
   onDebugSetBreakpoint: (staticAddress: string) => void;
   onDebugRemoveBreakpoint: (breakpointId: number) => void;
   onDebugSetRegister: (name: string, value: string) => void;
+  /** x64dbg-style module list - fetched by `App.tsx`, passed straight
+   *  through to `DebugPanel` (see its own docstring). */
+  debugModules: DebugModule[];
+  loadingDebugModules: boolean;
 }
 
 function FunctionView({
   node,
   rebaseDelta,
+  imageBase,
+  fileName,
   detail,
   loading,
   disassembly,
@@ -84,9 +101,12 @@ function FunctionView({
   onExpand,
   onFocusAddress,
   onDecompile,
+  onExportFunction,
 }: {
   node: GraphNode;
   rebaseDelta: number | null;
+  imageBase: string | null;
+  fileName: string | null;
   detail: FunctionDetail | null;
   loading: boolean;
   disassembly: Graph | null;
@@ -96,8 +116,69 @@ function FunctionView({
   onExpand: (address: string) => void;
   onFocusAddress: (address: string) => void;
   onDecompile: (address: string) => void;
+  onExportFunction: (address: string) => void;
 }): JSX.Element {
-  const [codeView, setCodeView] = useState<'disasm' | 'pseudo'>('disasm');
+  const { openCopyMenu } = useCopyMenu();
+
+  /** Copy-menu items for the `x64dbg (module+offset)` entry - `[]` when the
+   *  conversion doesn't apply (see `toX64dbgExpression`'s own docstring),
+   *  so callers can just spread this in without an extra null-check. */
+  const x64dbgCopyItem = (staticAddress: string | null): { label: string; value: string }[] => {
+    if (!fileName) return [];
+    const expr = toX64dbgExpression(staticAddress, imageBase, fileName);
+    return expr ? [{ label: 'dạng x64dbg (module+offset)', value: expr }] : [];
+  };
+
+  // -- Disassembly <-> Pseudocode sync (IDA-style dual pane: both boxes are
+  // always visible, never a toggle between the two - hovering a row/line in
+  // one instantly highlights its counterpart in the other, no click needed)
+  // - built on `detail.pseudocodeAddressLines` (address -> pseudocode line
+  // number, from angr's own decompiler internals - see
+  // `angr_analyzer._pseudocode_address_lines`).
+  const addressToLine = detail?.pseudocodeAddressLines ?? null;
+  // Reverse of `addressToLine` - one pseudocode line can decompile from
+  // several instructions (e.g. a multi-instruction comparison folded into one
+  // `if`), so this is address*es* plural.
+  const lineToAddresses = useMemo(() => {
+    const map = new Map<number, string[]>();
+    if (!addressToLine) return map;
+    for (const [address, line] of Object.entries(addressToLine)) {
+      const list = map.get(line) ?? [];
+      list.push(address);
+      map.set(line, list);
+    }
+    for (const list of map.values()) list.sort();
+    return map;
+  }, [addressToLine]);
+  const pseudoLineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const disasmRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Exactly one of these is non-null at a time in practice (the mouse is
+  // only ever over one box), but they're independent state so each box only
+  // ever has to know about its own hover, not the other's.
+  const [hoveredAddress, setHoveredAddress] = useState<string | null>(null); // hovering a disasm row
+  const [hoveredLine, setHoveredLine] = useState<number | null>(null); // hovering a pseudo line
+
+  const highlightedPseudoLine =
+    hoveredAddress !== null ? (addressToLine?.[hoveredAddress] ?? null) : null;
+  const highlightedDisasmAddresses =
+    hoveredLine !== null ? (lineToAddresses.get(hoveredLine) ?? []) : [];
+
+  // Keeps the synced spot in the *other* box visible while hovering, without
+  // fighting the user's own scroll position - `block: 'nearest'` only moves
+  // it if it's not already on screen (unlike Ctrl+G's jump-to-center in
+  // AssemblyView, which is a deliberate one-shot action; a continuous hover
+  // effect re-centering on every mouse move would be disorienting).
+  useEffect(() => {
+    if (highlightedPseudoLine !== null) {
+      pseudoLineRefs.current.get(highlightedPseudoLine)?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [highlightedPseudoLine]);
+  const firstHighlightedDisasmAddress = highlightedDisasmAddresses[0] ?? null;
+  useEffect(() => {
+    if (firstHighlightedDisasmAddress !== null) {
+      disasmRowRefs.current.get(firstHighlightedDisasmAddress)?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [firstHighlightedDisasmAddress]);
 
   const score = detail?.riskScore ?? node.metadata.riskScore ?? 0;
   const reasons = detail?.riskReasons ?? [];
@@ -116,14 +197,38 @@ function FunctionView({
   const pseudoNote = detail?.pseudocodeNote ?? null;
   const pseudoAvailable = pseudoStatus === 'available' && Boolean(pseudocode);
   const pseudoWaiting = loading && !detail;
+  const pseudocodeLines = pseudocode ? pseudocode.split('\n') : [];
+
+  // Repopulated fresh by each row/line's own ref callback below on every
+  // render - stale entries from a previous function must not linger
+  // (mirrors AssemblyView.tsx's `rowRefs` for the same reason).
+  disasmRowRefs.current.clear();
+  pseudoLineRefs.current.clear();
 
   return (
     <>
       <div className="panel-section">
-        <div className="detail-title">{detail?.name ?? node.label}</div>
+        <div
+          className="detail-title"
+          onContextMenu={(event) =>
+            openCopyMenu(event, [{ label: 'tên hàm', value: detail?.name ?? node.label }])
+          }
+        >
+          {detail?.name ?? node.label}
+        </div>
         <dl className="kv" style={{ marginTop: 6 }}>
           <dt>Address</dt>
-          <dd>{node.address ? displayAddress(node.address, rebaseDelta) : '-'}</dd>
+          <dd
+            onContextMenu={(event) =>
+              node.address &&
+              openCopyMenu(event, [
+                { label: 'địa chỉ', value: displayAddress(node.address, rebaseDelta) },
+                ...x64dbgCopyItem(node.address),
+              ])
+            }
+          >
+            {node.address ? displayAddress(node.address, rebaseDelta) : '-'}
+          </dd>
           <dt>Size</dt>
           <dd>{detail?.size != null ? `${detail.size} bytes` : '-'}</dd>
           <dt>Basic blocks</dt>
@@ -147,130 +252,186 @@ function FunctionView({
               Expand 1 hop
             </button>
           )}
+          {node.address && (
+            <button
+              type="button"
+              onClick={() => onExportFunction(node.address as string)}
+              title="Tải Markdown gọn cho riêng hàm này - disassembly + pseudocode"
+            >
+              Xuất Markdown hàm này
+            </button>
+          )}
         </div>
+      </div>
+
+      {/* Disassembly and Pseudocode are two separate, always-visible boxes -
+          not a toggle between them - so hovering a row/line in one can
+          highlight its counterpart in the other at the same time (see the
+          hover state/effects above). */}
+      <div className="panel-section">
+        <div className="code-view-header">
+          <h4 style={{ margin: 0 }}>
+            Disassembly
+            {disassembly && disasmBlocks.length > 0
+              ? ` (${disasmInstructionCount} instruction, ${disasmBlocks.length} block)`
+              : ''}
+          </h4>
+        </div>
+
+        {loadingDisassembly && (
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Đang tải...</p>
+        )}
+
+        {!loadingDisassembly && disasmBlocks.length > 0 && (
+          <pre className="disasm disasm-split">
+            {disasmBlocks.map((block) => {
+              const instructions: Instruction[] = block.metadata.instructions ?? [];
+              return (
+                <div key={block.id}>
+                  <div
+                    className="disasm-block-header"
+                    onContextMenu={(event) =>
+                      openCopyMenu(event, [
+                        { label: 'địa chỉ block', value: displayAddress(block.address, rebaseDelta) },
+                        ...x64dbgCopyItem(block.address),
+                      ])
+                    }
+                  >
+                    {displayAddress(block.address, rebaseDelta)}
+                    {block.metadata.isFunctionStart ? ' · entry' : ''}
+                  </div>
+                  {instructions.length > 0 ? (
+                    instructions.map((insn) => {
+                      const pseudoLine = addressToLine?.[insn.address] ?? null;
+                      const isSynced = pseudoLine !== null;
+                      const isHighlighted = highlightedDisasmAddresses.includes(insn.address);
+                      const shownAddress = displayAddress(insn.address, rebaseDelta);
+                      return (
+                        <div
+                          key={insn.address}
+                          ref={(el) => {
+                            if (el) disasmRowRefs.current.set(insn.address, el);
+                          }}
+                          className={`disasm-row${isSynced ? ' sync-available' : ''}${isHighlighted ? ' sync-hover' : ''}`}
+                          title={
+                            isSynced
+                              ? 'Có dòng pseudocode tương ứng · Chuột phải để copy'
+                              : 'Chuột phải để copy'
+                          }
+                          onMouseEnter={isSynced ? () => setHoveredAddress(insn.address) : undefined}
+                          onMouseLeave={isSynced ? () => setHoveredAddress(null) : undefined}
+                          onContextMenu={(event) =>
+                            openCopyMenu(event, [
+                              { label: 'địa chỉ', value: shownAddress },
+                              {
+                                label: 'dòng lệnh',
+                                value: `${shownAddress}  ${insn.mnemonic} ${insn.operands}`.trim(),
+                              },
+                              ...x64dbgCopyItem(insn.address),
+                            ])
+                          }
+                        >
+                          <span className="a">{shownAddress}</span>
+                          <span className="m">{insn.mnemonic}</span>
+                          <span>{insn.operands}</span>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="disasm-row">
+                      <span className="a" />
+                      <span style={{ color: 'var(--text-faint)' }}>
+                        (angr không disassemble được block này)
+                      </span>
+                      <span />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </pre>
+        )}
+
+        {!loadingDisassembly && disassembly && disasmBlocks.length === 0 && (
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+            Function này không có basic block nào (thường là import thunk hoặc stub).
+          </p>
+        )}
+
+        {disasmTruncated && (
+          <p className="disclaimer" style={{ marginTop: 6 }}>
+            Danh sách block/instruction đã bị cắt bớt vì function quá lớn. Mở CFG để xem toàn bộ
+            dưới dạng đồ thị.
+          </p>
+        )}
       </div>
 
       <div className="panel-section">
         <div className="code-view-header">
-          <h4 style={{ margin: 0 }}>
-            {codeView === 'disasm'
-              ? `Disassembly${
-                  disassembly && disasmBlocks.length > 0
-                    ? ` (${disasmInstructionCount} instruction, ${disasmBlocks.length} block)`
-                    : ''
-                }`
-              : 'Pseudocode (C)'}
-          </h4>
-          <div className="segmented small" role="group" aria-label="Kiểu hiển thị code">
-            <button
-              type="button"
-              aria-pressed={codeView === 'disasm'}
-              onClick={() => setCodeView('disasm')}
-            >
-              Disassembly
-            </button>
-            <button
-              type="button"
-              aria-pressed={codeView === 'pseudo'}
-              onClick={() => setCodeView('pseudo')}
-              title={!pseudoAvailable ? (pseudoNote ?? undefined) : undefined}
-            >
-              Pseudocode
-            </button>
-          </div>
+          <h4 style={{ margin: 0 }}>Pseudocode (C)</h4>
         </div>
 
-        {codeView === 'disasm' && (
-          <>
-            {loadingDisassembly && (
-              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Đang tải...</p>
-            )}
-
-            {!loadingDisassembly && disasmBlocks.length > 0 && (
-              <pre className="disasm disasm-full">
-                {disasmBlocks.map((block) => {
-                  const instructions: Instruction[] = block.metadata.instructions ?? [];
-                  return (
-                    <div key={block.id}>
-                      <div className="disasm-block-header">
-                        {displayAddress(block.address, rebaseDelta)}
-                        {block.metadata.isFunctionStart ? ' · entry' : ''}
-                      </div>
-                      {instructions.length > 0 ? (
-                        instructions.map((insn) => (
-                          <div className="disasm-row" key={insn.address}>
-                            <span className="a">{displayAddress(insn.address, rebaseDelta)}</span>
-                            <span className="m">{insn.mnemonic}</span>
-                            <span>{insn.operands}</span>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="disasm-row">
-                          <span className="a" />
-                          <span style={{ color: 'var(--text-faint)' }}>
-                            (angr không disassemble được block này)
-                          </span>
-                          <span />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </pre>
-            )}
-
-            {!loadingDisassembly && disassembly && disasmBlocks.length === 0 && (
-              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-                Function này không có basic block nào (thường là import thunk hoặc stub).
-              </p>
-            )}
-
-            {disasmTruncated && (
-              <p className="disclaimer" style={{ marginTop: 6 }}>
-                Danh sách block/instruction đã bị cắt bớt vì function quá lớn. Mở CFG để xem toàn
-                bộ dưới dạng đồ thị.
-              </p>
-            )}
-          </>
+        {(pseudoWaiting || isDecompiling) && (
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+            {isDecompiling
+              ? 'Đang decompile... (lần đầu cho function lớn có thể mất vài giây)'
+              : 'Đang tải...'}
+          </p>
         )}
 
-        {codeView === 'pseudo' && (
+        {!pseudoWaiting && !isDecompiling && pseudoAvailable && (
+          <pre className="disasm disasm-split pseudocode">
+            {pseudocodeLines.map((text, index) => {
+              const lineNumber = index + 1;
+              const addresses = lineToAddresses.get(lineNumber);
+              const isSynced = Boolean(addresses && addresses.length > 0);
+              const isHighlighted = highlightedPseudoLine === lineNumber;
+              return (
+                <div
+                  key={lineNumber}
+                  ref={(el) => {
+                    if (el) pseudoLineRefs.current.set(lineNumber, el);
+                  }}
+                  className={`pseudo-line${isSynced ? ' sync-available' : ''}${isHighlighted ? ' sync-hover' : ''}`}
+                  title={
+                    isSynced
+                      ? 'Có dòng disassembly tương ứng · Chuột phải để copy'
+                      : 'Chuột phải để copy'
+                  }
+                  onMouseEnter={isSynced ? () => setHoveredLine(lineNumber) : undefined}
+                  onMouseLeave={isSynced ? () => setHoveredLine(null) : undefined}
+                  onContextMenu={(event) =>
+                    openCopyMenu(event, [{ label: 'dòng pseudocode', value: text }])
+                  }
+                >
+                  {text || ' '}
+                </div>
+              );
+            })}
+          </pre>
+        )}
+
+        {!pseudoWaiting && !isDecompiling && !pseudoAvailable && (
           <>
-            {(pseudoWaiting || isDecompiling) && (
-              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-                {isDecompiling
-                  ? 'Đang decompile... (lần đầu cho function lớn có thể mất vài giây)'
-                  : 'Đang tải...'}
-              </p>
-            )}
-
-            {!pseudoWaiting && !isDecompiling && pseudoAvailable && (
-              <pre className="disasm disasm-full pseudocode">{pseudocode}</pre>
-            )}
-
-            {!pseudoWaiting && !isDecompiling && !pseudoAvailable && (
-              <>
-                <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
-                  {pseudoNote ?? 'Function này chưa được decompile.'}
-                </p>
-                {pseudoStatus !== 'not_applicable' && node.address && (
-                  <button
-                    type="button"
-                    style={{ marginTop: 8 }}
-                    onClick={() => onDecompile(node.address as string)}
-                  >
-                    Decompile hàm này
-                  </button>
-                )}
-              </>
-            )}
-
-            <p className="disclaimer" style={{ marginTop: 8 }}>
-              Pseudocode do angr Decompiler (heuristic) tự sinh ra - có thể khác với source thật,
-              chỉ mang tính tham khảo khi đọc code, không phải kết quả decompile chính xác 100%.
+            <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+              {pseudoNote ?? 'Function này chưa được decompile.'}
             </p>
+            {pseudoStatus !== 'not_applicable' && node.address && (
+              <button
+                type="button"
+                style={{ marginTop: 8 }}
+                onClick={() => onDecompile(node.address as string)}
+              >
+                Decompile hàm này
+              </button>
+            )}
           </>
         )}
+
+        <p className="disclaimer" style={{ marginTop: 8 }}>
+          Pseudocode do angr Decompiler (heuristic) tự sinh ra - có thể khác với source thật, chỉ
+          mang tính tham khảo khi đọc code, không phải kết quả decompile chính xác 100%.
+        </p>
       </div>
 
       <div className="panel-section">
@@ -493,6 +654,8 @@ function ApiView({
 export function NodeDetails({
   node,
   rebaseDelta,
+  imageBase,
+  fileName,
   functionDetail,
   loadingDetail,
   functionDisassembly,
@@ -505,6 +668,7 @@ export function NodeDetails({
   onFocusAddress,
   onFilterByApi,
   onDecompile,
+  onExportFunction,
   debugSession,
   debugLoading,
   debugError,
@@ -514,6 +678,8 @@ export function NodeDetails({
   onDebugSetBreakpoint,
   onDebugRemoveBreakpoint,
   onDebugSetRegister,
+  debugModules,
+  loadingDebugModules,
 }: NodeDetailsProps): JSX.Element {
   return (
     <aside className="panel panel-right">
@@ -537,6 +703,8 @@ export function NodeDetails({
             onRemoveBreakpoint={onDebugRemoveBreakpoint}
             onSetRegister={onDebugSetRegister}
             onFocusStaticAddress={onFocusAddress}
+            modules={debugModules}
+            loadingModules={loadingDebugModules}
           />
         )}
 
@@ -558,6 +726,8 @@ export function NodeDetails({
           <FunctionView
             node={node}
             rebaseDelta={rebaseDelta}
+            imageBase={imageBase}
+            fileName={fileName}
             detail={functionDetail}
             loading={loadingDetail}
             disassembly={functionDisassembly}
@@ -567,6 +737,7 @@ export function NodeDetails({
             onExpand={onExpand}
             onFocusAddress={onFocusAddress}
             onDecompile={onDecompile}
+            onExportFunction={onExportFunction}
           />
         )}
 

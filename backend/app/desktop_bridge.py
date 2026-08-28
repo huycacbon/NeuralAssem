@@ -39,9 +39,9 @@ from app.dynamic.config import dynamic_settings
 from app.dynamic.debug_bridge.client import DebugBridgeError
 from app.dynamic.models import (
     BreakpointCreateRequest,
-    ConnectRequest,
     LocalLaunchRequest,
     RegisterWriteRequest,
+    RuntimeBreakpointCreateRequest,
     StepRequest,
 )
 from app.dynamic.risk_gate import derive_risk_bucket
@@ -211,6 +211,17 @@ class DesktopApi:
             return _not_found_function(address)
         return _dump(detail)
 
+    def decompile_all_functions(self, analysis_id: str) -> dict[str, Any]:
+        """Same as the web deployment's `POST .../decompile-all` - decompiles
+        every function still lacking pseudocode, best-effort, no time budget.
+        Can take minutes on a binary with many non-trivial functions; the
+        frontend is expected to show its own loading state around this call.
+        """
+        try:
+            return self._service.decompile_all_functions(analysis_id)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+
     def get_function_cfg(self, analysis_id: str, address: str) -> dict[str, Any]:
         try:
             graph = self._service.get_function_cfg(analysis_id, address)
@@ -219,6 +230,18 @@ class DesktopApi:
         if graph is None:
             return _not_found_function(address)
         return _dump(graph)
+
+    def export_function_markdown(self, analysis_id: str, address: str) -> dict[str, Any]:
+        """Same compact single-function report as the web deployment's
+        `GET .../functions/{addr}/export.md`, returned as `{filename, content}`
+        like `export_markdown`/`export_markdown_full` above."""
+        try:
+            markdown = self._service.export_function_markdown(analysis_id, address)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+        if markdown is None:
+            return _not_found_function(address)
+        return {"filename": f"function-{address.replace('0x', '')}.md", "content": markdown}
 
     def get_call_graph(
         self,
@@ -288,6 +311,18 @@ class DesktopApi:
             return _not_found(analysis_id)
         return {"filename": f"analysis-{analysis_id[:8]}.md", "content": markdown}
 
+    def export_markdown_full(self, analysis_id: str) -> dict[str, Any]:
+        """Same compact-report format as `export_markdown`, except the
+        Function Detail section covers every function that currently has
+        pseudocode rather than a risk-curated top-25 - call
+        `decompile_all_functions` first to fill in as much of the binary as
+        possible before calling this."""
+        try:
+            markdown = self._service.export_markdown_full(analysis_id)
+        except AnalysisNotFound:
+            return _not_found(analysis_id)
+        return {"filename": f"analysis-{analysis_id[:8]}-full.md", "content": markdown}
+
     def delete_analysis(self, analysis_id: str) -> dict[str, Any]:
         return {"deleted": self._service.delete(analysis_id)}
 
@@ -311,48 +346,6 @@ class DesktopApi:
             "sampleName": record.file.name,
             "likelyPacked": record.summary.likely_packed,
         }
-
-    def debug_connect(
-        self,
-        analysis_id: str,
-        host: str,
-        port: int,
-        process_id: int | None,
-        process_name: str | None,
-    ) -> dict[str, Any]:
-        try:
-            ConnectRequest(
-                analysisId=analysis_id,
-                host=host,
-                port=port,
-                processId=process_id,
-                processName=process_name,
-            )
-        except Exception as exc:
-            return _error_envelope("VALIDATION_ERROR", "Tham số kết nối không hợp lệ", str(exc))
-
-        try:
-            session = self._debug_store.create(
-                analysis_id,
-                host,
-                port,
-                process_id,
-                process_name,
-                dynamic_settings.connect_timeout_seconds,
-            )
-        except DynamicAnalysisNotFound:
-            return _not_found(analysis_id)
-        except DebugBridgeError as exc:
-            return _error_envelope(
-                "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-            )
-        except Exception as exc:  # pragma: no cover - unexpected bridge failure
-            logger.exception("Kết nối debug session thất bại ngoài dự kiến")
-            return _error_envelope(
-                "DYNAMIC_CONNECT_FAILED", "Không kết nối/attach được tới dbgsrv", str(exc)
-            )
-
-        return _dump(session.snapshot_state())
 
     def debug_launch_local(self, analysis_id: str, command_line: str) -> dict[str, Any]:
         """Local-launch: makes THIS process execute `command_line` directly
@@ -452,6 +445,30 @@ class DesktopApi:
         except DebugBridgeError as exc:
             return _error_envelope("DYNAMIC_CONNECT_FAILED", "Không đặt được breakpoint", str(exc))
 
+    def debug_set_runtime_breakpoint(self, session_id: str, runtime_address: str) -> dict[str, Any]:
+        """Same as `debug_set_breakpoint` above, except `runtime_address` is
+        used as-is - no `address_map` rebase. For addresses outside the
+        sample's own module (system DLLs like ntdll) - see
+        `DebugSession.set_runtime_breakpoint`'s docstring."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+
+        RuntimeBreakpointCreateRequest(runtimeAddress=runtime_address)  # validates shape only
+        address = try_parse_address(runtime_address)
+        if address is None:
+            return _error_envelope(
+                "DYNAMIC_INVALID_ADDRESS", "Địa chỉ không hợp lệ", f"address={runtime_address}"
+            )
+
+        try:
+            return _dump(session.set_runtime_breakpoint(address))
+        except DynamicSessionError as exc:
+            return _error_envelope(exc.code, exc.message)
+        except DebugBridgeError as exc:
+            return _error_envelope("DYNAMIC_CONNECT_FAILED", "Không đặt được breakpoint", str(exc))
+
     def debug_remove_breakpoint(self, session_id: str, breakpoint_id: int) -> dict[str, Any]:
         try:
             session = self._debug_store.get(session_id)
@@ -537,6 +554,40 @@ class DesktopApi:
             return _error_envelope(exc.code, exc.message)
         except DebugBridgeError as exc:
             return _error_envelope("DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc))
+
+    def debug_disassemble_at(
+        self, session_id: str, address: str, count: int = 40
+    ) -> dict[str, Any]:
+        """Mirrors `GET /dynamic/sessions/{id}/disassembly/at` - see
+        `app.dynamic.session.DebugSession.disassemble_at`'s docstring (the
+        Ctrl+G "jump into a loaded DLL" leg, an explicit address rather than
+        the current PC)."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+
+        parsed_address = try_parse_address(address)
+        if parsed_address is None:
+            return _error_envelope(
+                "DYNAMIC_INVALID_ADDRESS", "Địa chỉ không hợp lệ", f"address={address}"
+            )
+
+        try:
+            return _dump(session.disassemble_at(parsed_address, min(max(count, 1), 200)))
+        except DynamicSessionError as exc:
+            return _error_envelope(exc.code, exc.message)
+        except DebugBridgeError as exc:
+            return _error_envelope("DYNAMIC_CONNECT_FAILED", "Disassemble thất bại", str(exc))
+
+    def debug_list_modules(self, session_id: str) -> dict[str, Any] | list[dict[str, Any]]:
+        """Mirrors `GET /dynamic/sessions/{id}/modules` - see
+        `app.dynamic.session.DebugSession.list_modules`'s docstring."""
+        try:
+            session = self._debug_store.get(session_id)
+        except DynamicSessionNotFound:
+            return _not_found_session(session_id)
+        return [_dump(module) for module in session.list_modules()]
 
     def debug_continue(self, session_id: str) -> dict[str, Any]:
         try:

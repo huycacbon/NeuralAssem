@@ -22,7 +22,8 @@
 
 import { useState } from 'react';
 
-import type { DebugSessionState } from '@/types/debug';
+import { useCopyMenu } from '@/components/CopyContextMenu';
+import type { DebugModule, DebugSessionState } from '@/types/debug';
 
 /** Mirrors `_FLAG_REGISTER_NAMES` in
  *  `backend/app/dynamic/debug_bridge/client.py` - kept as a separate
@@ -55,6 +56,12 @@ interface DebugPanelProps {
   onRemoveBreakpoint: (breakpointId: number) => void;
   onSetRegister: (name: string, value: string) => void;
   onFocusStaticAddress: (address: string) => void;
+  /** x64dbg-style module list (main EXE + every DLL currently loaded) -
+   *  fetched by `App.tsx` on demand (see `debugApi.listModules`'s
+   *  docstring), re-fetched after every step/continue since new modules can
+   *  load at any point. */
+  modules: DebugModule[];
+  loadingModules: boolean;
 }
 
 export function DebugPanel({
@@ -70,7 +77,10 @@ export function DebugPanel({
   onRemoveBreakpoint,
   onSetRegister,
   onFocusStaticAddress,
+  modules,
+  loadingModules,
 }: DebugPanelProps): JSX.Element {
+  const { openCopyMenu } = useCopyMenu();
   const [newBreakpointAddress, setNewBreakpointAddress] = useState('');
   const [editingRegister, setEditingRegister] = useState<string | null>(null);
   const [registerDraft, setRegisterDraft] = useState('');
@@ -97,6 +107,13 @@ export function DebugPanel({
 
   const gprRegisters = session.registers.filter((reg) => !FLAG_REGISTER_NAMES.has(reg.name));
   const flagRegisters = session.registers.filter((reg) => FLAG_REGISTER_NAMES.has(reg.name));
+  // Nothing left to step/continue/read once the debuggee itself has
+  // terminated - see `types/debug.ts`'s `DebugSessionStatus` docstring for
+  // the real bug this distinction fixes (every stop used to look like
+  // `'break'`, so these controls stayed enabled forever on a dead process,
+  // clicking them just re-observed the same frozen-looking state with no
+  // indication anything had actually ended).
+  const exited = session.status === 'exited';
 
   return (
     <div className="panel-section debug-panel">
@@ -107,9 +124,21 @@ export function DebugPanel({
 
       <dl className="kv" style={{ marginTop: 6 }}>
         <dt>Runtime address</dt>
-        <dd>{session.runtimeAddress ?? '-'}</dd>
+        <dd
+          onContextMenu={(event) =>
+            session.runtimeAddress &&
+            openCopyMenu(event, [{ label: 'địa chỉ runtime', value: session.runtimeAddress }])
+          }
+        >
+          {session.runtimeAddress ?? '-'}
+        </dd>
         <dt>Static address</dt>
-        <dd>
+        <dd
+          onContextMenu={(event) =>
+            session.staticAddress &&
+            openCopyMenu(event, [{ label: 'địa chỉ static', value: session.staticAddress }])
+          }
+        >
           {session.staticAddress ? (
             <button
               type="button"
@@ -123,17 +152,39 @@ export function DebugPanel({
           )}
         </dd>
         <dt>Module base</dt>
-        <dd>{session.moduleLoadBase ?? '-'}</dd>
+        <dd
+          onContextMenu={(event) =>
+            session.moduleLoadBase &&
+            openCopyMenu(event, [{ label: 'module base', value: session.moduleLoadBase }])
+          }
+        >
+          {session.moduleLoadBase ?? '-'}
+        </dd>
       </dl>
 
       <div className="chip-row" style={{ marginTop: 8 }}>
-        <button type="button" disabled={loading} onClick={onStepInto}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để step' : undefined}
+          onClick={onStepInto}
+        >
           Step Into
         </button>
-        <button type="button" disabled={loading} onClick={onStepOver}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để step' : undefined}
+          onClick={onStepOver}
+        >
           Step Over
         </button>
-        <button type="button" disabled={loading} onClick={onContinue}>
+        <button
+          type="button"
+          disabled={loading || exited}
+          title={exited ? 'Tiến trình đã kết thúc - không còn gì để tiếp tục' : undefined}
+          onClick={onContinue}
+        >
           Continue
         </button>
         <button type="button" disabled={loading} onClick={onDisconnect}>
@@ -149,7 +200,16 @@ export function DebugPanel({
         <>
           <pre className="disasm">
             {gprRegisters.map((reg) => (
-              <div className="disasm-row register-row" key={reg.name}>
+              <div
+                className="disasm-row register-row"
+                key={reg.name}
+                onContextMenu={(event) =>
+                  openCopyMenu(event, [
+                    { label: 'tên thanh ghi', value: reg.name },
+                    { label: 'giá trị thanh ghi', value: reg.value },
+                  ])
+                }
+              >
                 <span className="a">{reg.name}</span>
                 {editingRegister === reg.name ? (
                   <input
@@ -229,37 +289,91 @@ export function DebugPanel({
       )}
 
       <h4 style={{ marginTop: 12 }}>Breakpoints ({session.breakpoints.length})</h4>
+      <p className="disclaimer" style={{ marginTop: 0, marginBottom: 4 }}>
+        Nhập <strong>địa chỉ static</strong> (ví dụ Entry point ở panel FILE, hoặc địa chỉ trong
+        Function CFG) — <strong>không phải</strong> "Runtime address" ở trên. Cách chắc ăn nhất:
+        double-click thẳng vào dòng lệnh trong assembly view thay vì gõ tay ở đây.
+      </p>
       <div className="chip-row" style={{ marginBottom: 6 }}>
         <input
           type="text"
           className="mono"
           style={{ width: 130 }}
-          placeholder={selectedNodeAddress ?? '0x401000'}
+          placeholder={selectedNodeAddress ?? '0x401000 (static)'}
           value={newBreakpointAddress}
           onChange={(event) => setNewBreakpointAddress(event.target.value)}
+          title="Địa chỉ static (không phải runtime)"
         />
         <button type="button" disabled={loading} onClick={addBreakpoint}>
-          + Breakpoint
+          + Breakpoint (static)
         </button>
       </div>
       {session.breakpoints.length > 0 ? (
         <div className="chip-row">
-          {session.breakpoints.map((bp) => (
-            <span key={bp.id} className="chip breakpoint-chip">
-              {bp.staticAddress}
-              <button
-                type="button"
-                className="chip-remove"
-                onClick={() => onRemoveBreakpoint(bp.id)}
-                aria-label={`Xóa breakpoint ${bp.staticAddress}`}
+          {session.breakpoints.map((bp) => {
+            // `staticAddress` is null for a runtime-address breakpoint (a
+            // system DLL like ntdll, outside the sample's own module - see
+            // `types/debug.ts`'s `DebugBreakpoint` docstring) - show the
+            // runtime address instead, with a hint, rather than "null".
+            const label = bp.staticAddress ?? `${bp.runtimeAddress} (ngoài module)`;
+            return (
+              <span
+                key={bp.id}
+                className={`chip breakpoint-chip${bp.planted ? '' : ' breakpoint-pending'}`}
+                title={
+                  bp.planted
+                    ? undefined
+                    : 'Chưa cấy được (thường vì module chứa địa chỉ này chưa load) - tự thử lại mỗi lần Continue/Step'
+                }
               >
-                ×
-              </button>
-            </span>
-          ))}
+                {!bp.planted && '⏳ '}
+                {label}
+                <button
+                  type="button"
+                  className="chip-remove"
+                  onClick={() => onRemoveBreakpoint(bp.id)}
+                  aria-label={`Xóa breakpoint ${label}`}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
         </div>
       ) : (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Chưa có breakpoint.</p>
+      )}
+
+      <h4 style={{ marginTop: 12 }}>Modules ({modules.length})</h4>
+      {loadingModules && modules.length === 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>Đang tải...</p>
+      )}
+      {modules.length > 0 ? (
+        <pre className="disasm">
+          {modules.map((module) => (
+            <div
+              className="disasm-row module-row"
+              key={module.loadBase}
+              onContextMenu={(event) =>
+                openCopyMenu(event, [
+                  { label: 'module base', value: module.loadBase },
+                  { label: 'tên module', value: module.moduleName },
+                ])
+              }
+            >
+              <span className="a">{module.loadBase}</span>
+              <span className="mono module-name" title={module.moduleName}>
+                {module.moduleName}
+              </span>
+            </div>
+          ))}
+        </pre>
+      ) : (
+        !loadingModules && (
+          <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-faint)' }}>
+            Chưa có dữ liệu module.
+          </p>
+        )
       )}
     </div>
   );

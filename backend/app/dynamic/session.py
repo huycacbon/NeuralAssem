@@ -17,13 +17,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from app.dynamic.debug_bridge.address_map import runtime_to_static, static_to_runtime
+from app.dynamic.debug_bridge.address_map import (
+    is_canonical_x64_address,
+    runtime_to_static,
+    static_to_runtime,
+)
 from app.dynamic.debug_bridge.client import DebugBridge, StopReason
 from app.dynamic.models import (
     BreakpointModel,
     LiveDisassemblyResponse,
     LiveInstructionModel,
     MemoryDumpResponse,
+    ModuleModel,
     RegisterModel,
     SessionStateResponse,
     StackFrameModel,
@@ -39,6 +44,20 @@ class SessionStatus(StrEnum):
     ATTACHED = "attached"
     RUNNING = "running"
     BREAK = "break"
+    #: The debuggee process itself has terminated (ran to completion, or
+    #: crashed) - not an error in *this app*, but a terminal state: nothing
+    #: further can step/continue/read live state, since there is no live
+    #: process left. See `go`/`step`'s docstrings for the real, live-confirmed
+    #: bug this distinction fixes - `go`/`step` used to unconditionally set
+    #: `BREAK` regardless of what actually happened, so a process exit looked
+    #: identical to a legitimate breakpoint stop: `GetThreadContext` on the
+    #: now-dead thread handle doesn't raise, it returns whatever context that
+    #: thread happened to have at its very last moment (confirmed live: a
+    #: stable address inside ntdll's own process-termination path, the same
+    #: address every time on this machine since system DLLs share one ASLR
+    #: base per boot) - Step/Continue clicked again just re-observed that
+    #: same frozen-looking state forever, with no error shown anywhere.
+    EXITED = "exited"
     DISCONNECTED = "disconnected"
     ERROR = "error"
 
@@ -57,7 +76,13 @@ class DynamicSessionError(RuntimeError):
 @dataclass
 class _Breakpoint:
     id: int
-    static_address: int
+    #: `None` for a breakpoint set directly at a *runtime* address (see
+    #: `set_runtime_breakpoint`) - typically somewhere outside the sample's
+    #: own module (a system DLL like ntdll), where no meaningful static
+    #: address exists at all: the static graph never covered it, and
+    #: `address_map`'s rebase delta is only valid for the sample's own
+    #: module, not an unrelated one loaded at its own, different base.
+    static_address: int | None
     runtime_address: int
 
 
@@ -118,6 +143,12 @@ class DebugSession:
                 self._bridge.connect(host, port, timeout_seconds)
                 module = self._bridge.attach(process_id, process_name)
                 self._module_load_base = module.load_base
+                logger.warning(
+                    "Remote debug attach: session=%s load_base=0x%x preferred_image_base=0x%x",
+                    self.session_id,
+                    module.load_base,
+                    self._preferred_image_base,
+                )
                 self.status = SessionStatus.ATTACHED
             except Exception as exc:
                 self.status = SessionStatus.ERROR
@@ -159,6 +190,12 @@ class DebugSession:
             try:
                 module = self._bridge.create_and_attach_local(command_line)
                 self._module_load_base = module.load_base
+                logger.warning(
+                    "Local-launch debug: session=%s load_base=0x%x preferred_image_base=0x%x",
+                    self.session_id,
+                    module.load_base,
+                    self._preferred_image_base,
+                )
                 self.status = SessionStatus.ATTACHED
             except Exception as exc:
                 self.status = SessionStatus.ERROR
@@ -194,12 +231,31 @@ class DebugSession:
         return self._module_load_base
 
     def set_breakpoint(self, static_address: int) -> BreakpointModel:
+        """For an address inside the sample's *own* module - the normal
+        case, everything reachable from the graph/CFG/function list. Rebases
+        through `address_map` using the sample's own load base."""
         with self._lock:
             self.touch()
             load_base = self._require_load_base()
             runtime_address = static_to_runtime(
                 static_address, load_base, self._preferred_image_base
             )
+            if not is_canonical_x64_address(runtime_address):
+                # Confirmed live cause: a *runtime* address (e.g. copied from
+                # the "Runtime address" field, or a live-disassembly row -
+                # that one should go through `set_runtime_breakpoint`
+                # instead) fed into this *static*-address parameter gets the
+                # rebase delta applied a second time, landing outside any
+                # address x86-64 can even represent - surfaces many calls
+                # later as an opaque `ReadVirtual` failure otherwise. Caught
+                # right here instead, with a message that says what's
+                # actually wrong.
+                raise DynamicSessionError(
+                    "DYNAMIC_INVALID_ADDRESS",
+                    f"Địa chỉ 0x{static_address:x} sau khi quy đổi sang runtime "
+                    f"(0x{runtime_address:x}) không phải địa chỉ x86-64 hợp lệ - có thể bạn đã "
+                    "nhập nhầm 'Runtime address' thay vì 'Static address' vào ô này.",
+                )
             bp_id = self._bridge.set_breakpoint(runtime_address)
             self._breakpoints[bp_id] = _Breakpoint(
                 id=bp_id, static_address=static_address, runtime_address=runtime_address
@@ -207,6 +263,37 @@ class DebugSession:
             return BreakpointModel(
                 id=bp_id,
                 static_address=format_address(static_address),
+                runtime_address=format_address(runtime_address),
+            )
+
+    def set_runtime_breakpoint(self, runtime_address: int) -> BreakpointModel:
+        """For an address the caller already knows is a *runtime* address -
+        the live-disassembly assembly view's fallback rows (system DLLs like
+        ntdll, outside the sample's own module - see `disassemble_current`'s
+        docstring), where `set_breakpoint`'s static->runtime rebase would be
+        actively wrong: that math only holds for the sample's own module,
+        and applying it to an unrelated module's address produces a bogus
+        address that is not actually mapped there, which is exactly what
+        produced a live `ReadVirtual` failure (`ERROR_READ_FAULT`) the one
+        time this was tried through the static-only `set_breakpoint` path.
+        No `address_map` translation here at all - the address is used
+        exactly as given.
+        """
+        with self._lock:
+            self.touch()
+            self._require_load_base()  # still requires an attached session
+            if not is_canonical_x64_address(runtime_address):
+                raise DynamicSessionError(
+                    "DYNAMIC_INVALID_ADDRESS",
+                    f"Địa chỉ 0x{runtime_address:x} không phải địa chỉ x86-64 hợp lệ.",
+                )
+            bp_id = self._bridge.set_breakpoint(runtime_address)
+            self._breakpoints[bp_id] = _Breakpoint(
+                id=bp_id, static_address=None, runtime_address=runtime_address
+            )
+            return BreakpointModel(
+                id=bp_id,
+                static_address=None,
                 runtime_address=format_address(runtime_address),
             )
 
@@ -251,16 +338,38 @@ class DebugSession:
 
     # -- execution control -------------------------------------------------
 
+    def _apply_stop_reason(self, reason: StopReason) -> None:
+        """Sets `self.status` (and, on a process exit, an explanatory
+        `_last_error`) from a bridge's `StopReason` - see
+        `SessionStatus.EXITED`'s docstring for the real, live-confirmed bug
+        this replaces: every `StopReason.kind` used to collapse to `BREAK`
+        here unconditionally, so a genuine process exit was indistinguishable
+        from a legitimate breakpoint/step stop - `snapshot_state()` kept
+        trying to read registers/RIP from the now-dead process on every
+        subsequent request, silently returning whatever stale context
+        `GetThreadContext` happened to report for the dead thread handle
+        instead of erroring, which looked exactly like the debugger being
+        permanently frozen at one address with no error shown anywhere.
+        `"timeout"` reverts to `RUNNING` - the debuggee is presumably still
+        executing, this resume call just gave up waiting for now."""
+        if reason.kind == "exited":
+            self.status = SessionStatus.EXITED
+            self._last_error = (
+                "Tiến trình đã kết thúc (thoát bình thường hoặc bị crash) - không thể "
+                "step/continue thêm. Bấm Disconnect để đóng phiên."
+            )
+        elif reason.kind == "timeout":
+            self.status = SessionStatus.RUNNING
+        else:
+            self.status = SessionStatus.BREAK
+
     def step(self, mode: str) -> None:
         with self._lock:
             self.touch()
             self.status = SessionStatus.RUNNING
             try:
-                if mode == "over":
-                    self._bridge.step_over()
-                else:
-                    self._bridge.step_into()
-                self.status = SessionStatus.BREAK
+                reason = self._bridge.step_over() if mode == "over" else self._bridge.step_into()
+                self._apply_stop_reason(reason)
             except Exception as exc:
                 self.status = SessionStatus.ERROR
                 self._last_error = str(exc)
@@ -271,8 +380,18 @@ class DebugSession:
             self.touch()
             self.status = SessionStatus.RUNNING
             try:
-                reason = self._bridge.go(timeout_seconds)
-                self.status = SessionStatus.BREAK
+                # Always the *runtime* addresses (already translated in
+                # `set_breakpoint`, never the static ones the API/UI deal
+                # in) - `ComtypesDebugBridge.go` needs these to drive its
+                # step-loop workaround for free-running past a breakpoint;
+                # see that method's docstring for why it exists. A bridge
+                # that resumes reliably through its own native breakpoint
+                # mechanism is free to just ignore this set.
+                breakpoint_addresses = frozenset(
+                    bp.runtime_address for bp in self._breakpoints.values()
+                )
+                reason = self._bridge.go(timeout_seconds, breakpoint_addresses)
+                self._apply_stop_reason(reason)
                 return reason
             except Exception as exc:
                 self.status = SessionStatus.ERROR
@@ -329,6 +448,61 @@ class DebugSession:
                     for insn in instructions
                 ],
             )
+
+    def disassemble_at(self, runtime_address: int, instruction_count: int) -> LiveDisassemblyResponse:
+        """Same as `disassemble_current`, except forward from an explicitly
+        requested runtime address rather than the debugger's current PC -
+        the "jump to an address in a DLL that's actually loaded" leg of
+        Ctrl+G (see `AssemblyView.tsx`'s docstring): `runtime_address` need
+        not be anywhere near where execution currently is, only inside some
+        module this session has already loaded far enough to have mapped
+        memory at. Shares every other aspect (no `address_map` translation,
+        same `NotImplementedError` handling) with that method - see its
+        docstring for the rest.
+        """
+        with self._lock:
+            self.touch()
+            if self.status not in (SessionStatus.ATTACHED, SessionStatus.BREAK):
+                raise DynamicSessionError(
+                    "DYNAMIC_NOT_STOPPED", "Chỉ disassemble được khi đã dừng (attached/break)"
+                )
+            try:
+                instructions = self._bridge.disassemble_range(runtime_address, instruction_count)
+            except NotImplementedError as exc:
+                raise DynamicSessionError("DYNAMIC_DISASSEMBLE_UNSUPPORTED", str(exc)) from exc
+
+            module_label: str | None = None
+            try:
+                module_label = self._bridge.module_label_at(runtime_address)
+            except Exception:  # pragma: no cover - cosmetic only, never fatal
+                module_label = None
+
+            return LiveDisassemblyResponse(
+                runtime_address=format_address(runtime_address),
+                module_label=module_label,
+                instructions=[
+                    LiveInstructionModel(
+                        address=format_address(insn.address),
+                        mnemonic=insn.mnemonic,
+                        operands=insn.operands,
+                    )
+                    for insn in instructions
+                ],
+            )
+
+    # -- modules (x64dbg-style module list: main EXE + every loaded DLL) ----
+
+    def list_modules(self) -> list[ModuleModel]:
+        with self._lock:
+            self.touch()
+            return [
+                ModuleModel(
+                    load_base=format_address(module.load_base),
+                    module_name=module.module_name,
+                    size=module.size,
+                )
+                for module in self._bridge.list_modules()
+            ]
 
     # -- memory dump (assembly-view's read/write sibling) -------------------
 
@@ -419,8 +593,13 @@ class DebugSession:
                 breakpoints=[
                     BreakpointModel(
                         id=bp.id,
-                        static_address=format_address(bp.static_address),
+                        static_address=(
+                            format_address(bp.static_address)
+                            if bp.static_address is not None
+                            else None
+                        ),
                         runtime_address=format_address(bp.runtime_address),
+                        planted=self._bridge.is_breakpoint_planted(bp.runtime_address),
                     )
                     for bp in self._breakpoints.values()
                 ],

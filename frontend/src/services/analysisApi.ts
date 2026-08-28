@@ -22,6 +22,7 @@ import type {
   Graph,
   ImportedApi,
 } from '@/types/graph';
+import { formatHexAddress, parseHexAddress } from '@/utils/addressDisplay';
 
 const API_BASE_URL: string = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
 
@@ -38,6 +39,15 @@ export class ApiError extends Error {
     this.details = detail.details;
     this.status = status;
   }
+}
+
+/** Result of `analysisApi.decompileAll` - see its docstring. */
+export interface DecompileAllResult {
+  total: number;
+  alreadyAvailable: number;
+  decompiled: number;
+  failed: number;
+  skippedNotApplicable: number;
 }
 
 function isErrorEnvelope(value: unknown): value is { error: ApiErrorDetail } {
@@ -72,6 +82,7 @@ interface DesktopBridge {
   get_function(analysisId: string, address: string): Promise<unknown>;
   decompile_function(analysisId: string, address: string): Promise<unknown>;
   get_function_cfg(analysisId: string, address: string): Promise<unknown>;
+  export_function_markdown(analysisId: string, address: string): Promise<unknown>;
   get_call_graph(
     analysisId: string,
     depth: number,
@@ -83,6 +94,8 @@ interface DesktopBridge {
   get_strings(analysisId: string, limit: number, search: string | null): Promise<unknown>;
   expand(analysisId: string, address: string, maxNodes: number): Promise<unknown>;
   export_markdown(analysisId: string): Promise<unknown>;
+  decompile_all_functions(analysisId: string): Promise<unknown>;
+  export_markdown_full(analysisId: string): Promise<unknown>;
   delete_analysis(analysisId: string): Promise<unknown>;
 }
 
@@ -209,6 +222,33 @@ async function get<T>(path: string, params?: Record<string, string | number | bo
       0,
     );
   }
+}
+
+/**
+ * The Markdown export is built server-side from the static `AnalysisRecord`,
+ * so every address in it (`export_service.py`'s `` `{fn.address}` `` /
+ * `` `{file.entry_point}` `` fields) is a *static* address - same coordinate
+ * space as the graph/function list before any debug session exists (see
+ * `utils/addressDisplay.ts`'s module docstring for the full static-vs-runtime
+ * picture). When the export happens while a debug session is attached, that
+ * static address is no longer "where the code actually is" if the module got
+ * rebased (ASLR) - the caller passes the session's `rebaseDelta` so the
+ * exported document reflects the real, running address instead of the
+ * theoretical preferred-base one.
+ *
+ * Every address the exporter emits is wrapped in backticks as a `0x...` hex
+ * literal (entry point, risk-table rows, function-detail headers) - nothing
+ * else in the document matches that shape (the SHA-256 is backtick-wrapped
+ * too, but has no `0x` prefix), so a scoped regex replace is safe without
+ * having to reparse the whole document server-side.
+ */
+function rebaseExportedAddresses(content: string, rebaseDelta: number | null | undefined): string {
+  if (!rebaseDelta) return content;
+  return content.replace(/`(0x[0-9a-fA-F]+)`/g, (match, hex: string) => {
+    const parsed = parseHexAddress(hex);
+    if (parsed === null) return match;
+    return `\`${formatHexAddress(parsed + rebaseDelta)}\``;
+  });
 }
 
 export const analysisApi = {
@@ -361,6 +401,48 @@ export const analysisApi = {
     return handle<FunctionDetail>(response);
   },
 
+  /**
+   * Compact Markdown for exactly one function - full disassembly and
+   * pseudocode (if available), not risk-filtered like `exportMarkdown`/
+   * `exportMarkdownFull`. Same `{filename, content}` + `rebaseDelta`
+   * convention as those two - see `exportMarkdown`'s docstring.
+   */
+  async exportFunctionMarkdown(
+    analysisId: string,
+    address: string,
+    rebaseDelta?: number | null,
+  ): Promise<{ filename: string; content: string }> {
+    if (isDesktop()) {
+      const result = await callBridge<{ filename: string; content: string }>(async () =>
+        (await getBridge()).export_function_markdown(analysisId, address),
+      );
+      return { ...result, content: rebaseExportedAddresses(result.content, rebaseDelta) };
+    }
+    let response: Response;
+    try {
+      response = await fetch(
+        `${API_BASE_URL}/api/analysis/${analysisId}/functions/${address}/export.md`,
+      );
+    } catch (error) {
+      throw new ApiError(
+        {
+          code: 'NETWORK_ERROR',
+          message: 'Không kết nối được tới backend',
+          details: `Kiểm tra backend đang chạy tại ${API_BASE_URL || window.location.origin}`,
+        },
+        0,
+      );
+    }
+    if (!response.ok) {
+      await handle(response); // throws the structured ApiError
+    }
+    const content = await response.text();
+    return {
+      filename: `function-${address.replace(/^0x/i, '')}.md`,
+      content: rebaseExportedAddresses(content, rebaseDelta),
+    };
+  },
+
   async getCallGraph(
     analysisId: string,
     options: { depth?: number; maxNodes?: number; includeApis?: boolean } = {},
@@ -435,16 +517,109 @@ export const analysisApi = {
    * directly rather than a URL, so the caller builds a `Blob` + object URL to
    * trigger the download - that works the same whether the content came over
    * HTTP or straight from the bridge.
+   *
+   * `rebaseDelta` is the active debug session's `moduleLoadBase -
+   * preferredImageBase` (from `utils/addressDisplay.ts`'s
+   * `computeRebaseDelta`), or `null`/omitted with no session attached. When
+   * set, every address in the exported document is rewritten to the real
+   * runtime address instead of the static one the backend computed - see
+   * `rebaseExportedAddresses` above.
    */
-  async exportMarkdown(analysisId: string): Promise<{ filename: string; content: string }> {
+  async exportMarkdown(
+    analysisId: string,
+    rebaseDelta?: number | null,
+  ): Promise<{ filename: string; content: string }> {
     if (isDesktop()) {
-      return callBridge(async () => (await getBridge()).export_markdown(analysisId));
+      const result = await callBridge<{ filename: string; content: string }>(async () =>
+        (await getBridge()).export_markdown(analysisId),
+      );
+      return { ...result, content: rebaseExportedAddresses(result.content, rebaseDelta) };
     }
-    const response = await fetch(`${API_BASE_URL}/api/analysis/${analysisId}/export.md`);
+    // Unlike `get()`, this needs the raw Response (for `.text()`, not
+    // `.json()`), so it can't reuse that helper directly - but it still needs
+    // the same network-error wrapping `get()` gives every other endpoint.
+    // Without this try/catch, a failed `fetch` (backend unreachable, CORS
+    // block, offline) throws a plain TypeError instead of an `ApiError`, and
+    // every caller in this app only shows a banner for `instanceof ApiError`
+    // - so the export button would silently do nothing on any network hiccup.
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}/api/analysis/${analysisId}/export.md`);
+    } catch (error) {
+      throw new ApiError(
+        {
+          code: 'NETWORK_ERROR',
+          message: 'Không kết nối được tới backend',
+          details: `Kiểm tra backend đang chạy tại ${API_BASE_URL || window.location.origin}`,
+        },
+        0,
+      );
+    }
     if (!response.ok) {
       await handle(response); // throws the structured ApiError
     }
     const content = await response.text();
-    return { filename: `analysis-${analysisId.slice(0, 8)}.md`, content };
+    return {
+      filename: `analysis-${analysisId.slice(0, 8)}.md`,
+      content: rebaseExportedAddresses(content, rebaseDelta),
+    };
+  },
+
+  /**
+   * Decompile every function that still lacks pseudocode, best-effort, no
+   * count/time budget - unlike the eager pass at analysis time, this exists
+   * specifically to prepare for `exportMarkdownFull`. Can take from seconds
+   * to several minutes depending on the binary; callers are expected to show
+   * their own loading state around this (see `App.tsx`'s `handleExportFull`).
+   */
+  async decompileAll(analysisId: string): Promise<DecompileAllResult> {
+    if (isDesktop()) {
+      return callBridge(async () => (await getBridge()).decompile_all_functions(analysisId));
+    }
+    const response = await fetch(
+      `${API_BASE_URL}/api/analysis/${analysisId}/decompile-all`,
+      { method: 'POST' },
+    );
+    return handle<DecompileAllResult>(response);
+  },
+
+  /**
+   * Same report as `exportMarkdown`, except the Function Detail section
+   * covers every function that currently has pseudocode, not a risk-curated
+   * top-25 - the "export everything" counterpart. Does not decompile
+   * anything itself; call `decompileAll` first to fill in as much of the
+   * binary as possible. Same `rebaseDelta` handling as `exportMarkdown`.
+   */
+  async exportMarkdownFull(
+    analysisId: string,
+    rebaseDelta?: number | null,
+  ): Promise<{ filename: string; content: string }> {
+    if (isDesktop()) {
+      const result = await callBridge<{ filename: string; content: string }>(async () =>
+        (await getBridge()).export_markdown_full(analysisId),
+      );
+      return { ...result, content: rebaseExportedAddresses(result.content, rebaseDelta) };
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}/api/analysis/${analysisId}/export-full.md`);
+    } catch (error) {
+      throw new ApiError(
+        {
+          code: 'NETWORK_ERROR',
+          message: 'Không kết nối được tới backend',
+          details: `Kiểm tra backend đang chạy tại ${API_BASE_URL || window.location.origin}`,
+        },
+        0,
+      );
+    }
+    if (!response.ok) {
+      await handle(response); // throws the structured ApiError
+    }
+    const content = await response.text();
+    return {
+      filename: `analysis-${analysisId.slice(0, 8)}-full.md`,
+      content: rebaseExportedAddresses(content, rebaseDelta),
+    };
   },
 };

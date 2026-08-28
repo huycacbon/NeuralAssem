@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from '@/App';
+import { CopyMenuProvider } from '@/components/CopyContextMenu';
 
 const container = document.getElementById('root');
 if (!container) {
@@ -10,6 +11,8 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <CopyMenuProvider>
+      <App />
+    </CopyMenuProvider>
   </StrictMode>,
 );

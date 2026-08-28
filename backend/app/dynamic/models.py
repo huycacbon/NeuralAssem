@@ -14,24 +14,6 @@ from pydantic import Field
 from app.models.graph import CamelModel
 
 
-class ConnectRequest(CamelModel):
-    """Body of ``POST /dynamic/sessions``.
-
-    ``host``/``port`` are exactly what the user typed in the mandatory
-    warning-modal's connect form - the address of a ``dbgsrv`` they already
-    have running in their own VM. Neither is ever defaulted or guessed by
-    this app.
-    """
-
-    analysis_id: str
-    host: str
-    port: int = Field(gt=0, le=65535)
-    #: Hedge against the two documented dbgsrv attach workflows (see
-    #: docs/dynamic-analysis-vm-setup.md) - at least one should be given.
-    process_id: int | None = None
-    process_name: str | None = None
-
-
 class LocalLaunchRequest(CamelModel):
     """Body of ``POST /dynamic/sessions/local``.
 
@@ -54,6 +36,14 @@ class BreakpointCreateRequest(CamelModel):
     #: Hex string in the *static* address space (e.g. "0x401000"), the same
     #: form every other address in this app's API already uses.
     static_address: str
+
+
+class RuntimeBreakpointCreateRequest(CamelModel):
+    #: Hex string in the *runtime* address space directly - no address_map
+    #: rebase applied. For addresses outside the sample's own module (system
+    #: DLLs like ntdll) where no meaningful static address exists - see
+    #: `DebugSession.set_runtime_breakpoint`'s docstring.
+    runtime_address: str
 
 
 class StepRequest(CamelModel):
@@ -87,8 +77,32 @@ class StackFrameModel(CamelModel):
 
 class BreakpointModel(CamelModel):
     id: int
-    static_address: str
+    #: ``None`` for a breakpoint set via ``set_runtime_breakpoint`` (outside
+    #: the sample's own module) - see `DebugSession.set_runtime_breakpoint`'s
+    #: docstring.
+    static_address: str | None
     runtime_address: str
+    #: Whether the physical ``0xCC`` is currently written into the debuggee.
+    #: ``False`` most commonly means "the module this address is inside
+    #: hasn't loaded yet" (a DLL loaded later via ``LoadLibrary``, most
+    #: often) - not broken, just not plantable *yet*. Breakpoints are
+    #: planted lazily inside ``go()`` (see ``Win32DebugBridge.go``'s
+    #: docstring), so this reflects the outcome of the *last* resume, not a
+    #: live poll; a not-yet-loaded module's breakpoint keeps retrying every
+    #: subsequent ``go()`` automatically until it succeeds.
+    planted: bool = True
+
+
+class ModuleModel(CamelModel):
+    """One row of the debuggee's module list (main EXE + every DLL currently
+    mapped) - see ``DebugSession.list_modules``'s docstring."""
+
+    load_base: str
+    module_name: str
+    #: ``0`` when the module's own ``SizeOfImage`` could not be read (best-
+    #: effort, see ``Win32DebugBridge._module_size``'s docstring) - not an
+    #: error, just "size unknown".
+    size: int
 
 
 class SessionStateResponse(CamelModel):

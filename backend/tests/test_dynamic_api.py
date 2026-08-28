@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.analyzers.angr_analyzer import AnalysisArtifacts
 from app.dependencies import get_repository
+from app.dynamic.debug_bridge.client import ModuleInfo
 from app.dynamic.dependencies import get_session_store
 from app.dynamic.session_store import SessionStore
 from app.main import app
@@ -77,32 +78,28 @@ class TestRiskCheck:
         assert payload["sampleName"] == "fixture.exe"
 
 
-class TestConnectFlow:
-    def test_connect_unknown_analysis_returns_404(
-        self, client: TestClient, fake_store: SessionStore
-    ) -> None:
+class TestBreakpointStepContinueFlow:
+    """Breakpoint/step/continue/disconnect wiring, exercised over a
+    local-launch session (`POST /dynamic/sessions/local`) - the only
+    session-creation route left after the remote "Connect to dbgsrv" one
+    (`POST /dynamic/sessions`) was removed. None of this is local-launch-
+    specific itself; it's the same generic session lifecycle the old,
+    now-removed `TestConnectFlow` exercised over the remote route."""
+
+    def _launch(self, client: TestClient, analysis_id: str) -> str:
         response = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": "does-not-exist", "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
-        assert response.status_code == 404
-        assert response.json()["error"]["code"] == "DYNAMIC_ANALYSIS_NOT_FOUND"
+        assert response.status_code == 200
+        state = response.json()
+        assert state["status"] == "attached"
+        return state["sessionId"]
 
     def test_full_happy_path(
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
-        connect = client.post(
-            "/api/dynamic/sessions",
-            json={
-                "analysisId": stored_analysis.analysis_id,
-                "host": "127.0.0.1",
-                "port": 5005,
-            },
-        )
-        assert connect.status_code == 200
-        state = connect.json()
-        assert state["status"] == "attached"
-        session_id = state["sessionId"]
+        session_id = self._launch(client, stored_analysis.analysis_id)
 
         bp = client.post(
             f"/api/dynamic/sessions/{session_id}/breakpoints",
@@ -129,43 +126,47 @@ class TestConnectFlow:
         assert gone.status_code == 404
         assert gone.json()["error"]["code"] == "DYNAMIC_SESSION_NOT_FOUND"
 
-    def test_connect_failure_has_no_fallback(
-        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
-    ) -> None:
-        """Safety constraint #8: a failed connect is a structured error only
-        - nothing else is attempted."""
-        original_factory = fake_store._bridge_factory  # noqa: SLF001 - test-only reach-through
-
-        def failing_factory() -> FakeDebugBridge:
-            bridge = original_factory()
-            bridge.fail_connect = True
-            return bridge
-
-        fake_store._bridge_factory = failing_factory  # noqa: SLF001
-
-        response = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 1},
-        )
-        assert response.status_code == 502
-        assert response.json()["error"]["code"] == "DYNAMIC_CONNECT_FAILED"
-
     def test_invalid_breakpoint_address_rejected(
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
-        connect = client.post(
-            "/api/dynamic/sessions",
-            json={
-                "analysisId": stored_analysis.analysis_id,
-                "host": "127.0.0.1",
-                "port": 5005,
-            },
-        )
-        session_id = connect.json()["sessionId"]
+        session_id = self._launch(client, stored_analysis.analysis_id)
 
         response = client.post(
             f"/api/dynamic/sessions/{session_id}/breakpoints",
             json={"staticAddress": "not-an-address"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "DYNAMIC_INVALID_ADDRESS"
+
+    def test_runtime_breakpoint_sets_directly_no_rebase(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        """`/breakpoints/runtime` - for addresses outside the sample's own
+        module (e.g. ntdll rows from the live-disassembly fallback) - see
+        `DebugSession.set_runtime_breakpoint`'s docstring."""
+        session_id = self._launch(client, stored_analysis.analysis_id)
+
+        bp = client.post(
+            f"/api/dynamic/sessions/{session_id}/breakpoints/runtime",
+            json={"runtimeAddress": "0x7ffc20730aee"},
+        )
+        assert bp.status_code == 200
+        body = bp.json()
+        assert body["staticAddress"] is None
+        assert body["runtimeAddress"] == "0x7ffc20730aee"
+
+        state = client.get(f"/api/dynamic/sessions/{session_id}/state").json()
+        matching = next(b for b in state["breakpoints"] if b["id"] == body["id"])
+        assert matching["staticAddress"] is None
+
+    def test_invalid_runtime_breakpoint_address_rejected(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        session_id = self._launch(client, stored_analysis.analysis_id)
+
+        response = client.post(
+            f"/api/dynamic/sessions/{session_id}/breakpoints/runtime",
+            json={"runtimeAddress": "not-an-address"},
         )
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "DYNAMIC_INVALID_ADDRESS"
@@ -187,8 +188,8 @@ class TestRegisterWrite:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
 
@@ -203,8 +204,8 @@ class TestRegisterWrite:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
 
@@ -232,8 +233,8 @@ class TestMemoryDump:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
         session = fake_store.get(session_id)
@@ -252,8 +253,8 @@ class TestMemoryDump:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
 
@@ -272,8 +273,8 @@ class TestMemoryDump:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
 
@@ -293,8 +294,8 @@ class TestLiveDisassembly:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session_id = connect.json()["sessionId"]
 
@@ -317,8 +318,8 @@ class TestLiveDisassembly:
         self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
     ) -> None:
         connect = client.post(
-            "/api/dynamic/sessions",
-            json={"analysisId": stored_analysis.analysis_id, "host": "127.0.0.1", "port": 5005},
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
         )
         session = fake_store.get(connect.json()["sessionId"])
         session._bridge.disassemble_unsupported = True  # noqa: SLF001 - test-only reach-through
@@ -326,6 +327,101 @@ class TestLiveDisassembly:
         response = client.get(f"/api/dynamic/sessions/{session.session_id}/disassembly")
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "DYNAMIC_DISASSEMBLE_UNSUPPORTED"
+
+
+class TestLiveDisassemblyAt:
+    """`GET /dynamic/sessions/{id}/disassembly/at` - the Ctrl+G "jump into a
+    loaded DLL" leg, an explicit address rather than the current PC. See
+    `DebugSession.disassemble_at`'s docstring."""
+
+    def test_happy_path_uses_the_requested_address(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(
+            f"/api/dynamic/sessions/{session_id}/disassembly/at",
+            params={"address": "0x7ffd00005000", "count": 3},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["runtimeAddress"] == "0x7ffd00005000"
+        assert len(payload["instructions"]) == 3
+        assert payload["instructions"][0]["address"] == "0x7ffd00005000"
+
+    def test_invalid_address_returns_400(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(
+            f"/api/dynamic/sessions/{session_id}/disassembly/at",
+            params={"address": "not-a-hex-address"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "DYNAMIC_INVALID_ADDRESS"
+
+    def test_unknown_session_returns_404(
+        self, client: TestClient, fake_store: SessionStore
+    ) -> None:
+        response = client.get(
+            "/api/dynamic/sessions/does-not-exist/disassembly/at",
+            params={"address": "0x401000"},
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "DYNAMIC_SESSION_NOT_FOUND"
+
+
+class TestModuleList:
+    """`GET /dynamic/sessions/{id}/modules` - see
+    `DebugSession.list_modules`'s docstring."""
+
+    def test_returns_the_bridges_module_list(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session = fake_store.get(connect.json()["sessionId"])
+        session._bridge.modules = [  # noqa: SLF001 - test-only reach-through
+            ModuleInfo(load_base=0x140000000, module_name="sample.exe", size=0x27000),
+        ]
+
+        response = client.get(f"/api/dynamic/sessions/{session.session_id}/modules")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload == [
+            {"loadBase": "0x140000000", "moduleName": "sample.exe", "size": 0x27000}
+        ]
+
+    def test_empty_by_default(
+        self, client: TestClient, fake_store: SessionStore, stored_analysis: AnalysisRecord
+    ) -> None:
+        connect = client.post(
+            "/api/dynamic/sessions/local",
+            json={"analysisId": stored_analysis.analysis_id, "commandLine": r"C:\tools\sample.exe"},
+        )
+        session_id = connect.json()["sessionId"]
+
+        response = client.get(f"/api/dynamic/sessions/{session_id}/modules")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_unknown_session_returns_404(
+        self, client: TestClient, fake_store: SessionStore
+    ) -> None:
+        response = client.get("/api/dynamic/sessions/does-not-exist/modules")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "DYNAMIC_SESSION_NOT_FOUND"
 
 
 class TestLocalLaunch:

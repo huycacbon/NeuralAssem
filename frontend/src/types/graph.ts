@@ -129,6 +129,13 @@ export interface FileInfo {
   entryPoint: string;
   format: string;
   bits: number;
+  /** The PE's own preferred `ImageBase` - every "static" address elsewhere
+   *  in the app (function list, graphs, CFG, `entryPoint` above) is already
+   *  expressed in this coordinate space. Subtract this from a static
+   *  address to get its RVA, the portable form for a `module+RVA`
+   *  expression x64dbg/WinDbg's own "go to" accepts - see
+   *  `utils/x64dbgExpression.ts`. */
+  imageBase: string;
 }
 
 export interface FunctionSummary {
@@ -165,6 +172,13 @@ export interface FunctionDetail extends FunctionSummary {
   pseudocode: string | null;
   pseudocodeStatus: PseudocodeStatus;
   pseudocodeNote: string | null;
+  /** Instruction address (e.g. "0x401000") -> 1-indexed line number in
+   *  `pseudocode` - drives the Disassembly<->Pseudocode sync (see
+   *  NodeDetails.tsx). `null` when pseudocode isn't available, or is but the
+   *  map itself couldn't be built - both are expected, not errors: not every
+   *  pseudocode line has a mapped instruction (declarations, braces, blank
+   *  lines), and not every instruction survives into the decompiled output. */
+  pseudocodeAddressLines: Record<string, number> | null;
 }
 
 export interface FunctionListResponse {

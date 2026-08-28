@@ -24,7 +24,9 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import BinaryIO
 
-from app.dynamic.debug_bridge.client import ComtypesDebugBridge, DebugBridge
+from app.dynamic.debug_bridge.client import DebugBridge
+from app.dynamic.debug_bridge.thread_pinned import ThreadPinnedDebugBridge
+from app.dynamic.debug_bridge.win32_debug import Win32DebugBridge
 from app.dynamic.local_upload import stage_upload
 from app.dynamic.session import DebugSession
 from app.repositories.base import AnalysisRepository
@@ -34,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 class DynamicAnalysisNotFound(LookupError):
-    """The `analysis_id` given to `create()` has no static analysis on record."""
+    """The `analysis_id` given to `create_local()`/`create_local_from_upload()`
+    has no static analysis on record."""
 
 
 class DynamicSessionNotFound(LookupError):
@@ -48,13 +51,35 @@ class SessionStore:
         repository: AnalysisRepository,
         capacity: int,
         idle_timeout_seconds: int,
-        # Default is ComtypesDebugBridge, not PykdDebugBridge: pykd has no
-        # PyPI wheel for this project's Python version (see
-        # debug_bridge/client.py's module docstring). ComtypesDebugBridge's
-        # dbgeng-specific vtable slots still need filling in from a real
-        # dbgeng.h before a connection actually succeeds - see its class
-        # docstring - but it is at least importable/constructible here.
-        bridge_factory: Callable[[], DebugBridge] = ComtypesDebugBridge,
+        # `Win32DebugBridge` (plain Win32 debug API, no dbgeng/COM at all -
+        # see its module docstring) is the only bridge implementation left
+        # in this app - it replaced the earlier `ComtypesDebugBridge`
+        # (`dbgeng.dll`/COM) after a long, confirmed-live chain of
+        # dbgeng-specific failures (miscounted COM vtable slots,
+        # `IDebugBreakpoint` corrupting engine state just from being
+        # registered, a wrong `SetExecutionStatus` continuation value) that
+        # a live end-to-end test (attach -> breakpoint -> continue -> step
+        # -> step-over -> registers, against this repo's own
+        # `samples/*.exe` fixtures) confirmed does NOT reproduce on it. The
+        # remote "Connect to dbgsrv" feature that used to need
+        # `ComtypesDebugBridge` (there is no Win32-debug-API equivalent of
+        # dbgsrv's network process-server protocol - that one is
+        # dbgeng-proprietary) was removed at explicit user request rather
+        # than kept around solely to justify keeping that fragile code -
+        # local-launch (`create_local`/`create_local_from_upload`) is this
+        # store's only session-creation path now.
+        #
+        # Wrapped in `ThreadPinnedDebugBridge` - the Win32 debug API is
+        # thread-affine (a thread can only `WaitForDebugEvent`/
+        # `ContinueDebugEvent` for a process it itself debugs) and this
+        # app's two call paths (FastAPI's `run_in_threadpool`, pywebview's
+        # `js_api` bridge) do not otherwise guarantee every call for one
+        # session lands on the same OS thread - see that wrapper's module
+        # docstring for the live `ComtypesDebugBridge`-era failure that
+        # first motivated it (still just as true here).
+        bridge_factory: Callable[[], DebugBridge] = lambda: ThreadPinnedDebugBridge(
+            Win32DebugBridge()
+        ),
         clock: Callable[[], float] = time.monotonic,
         reaper_interval_seconds: float = 30.0,
         start_reaper: bool = True,
@@ -107,52 +132,17 @@ class SessionStore:
                 logger.exception("Lỗi khi ngắt kết nối session %s", session_id)
         return idle_ids
 
-    def create(
-        self,
-        analysis_id: str,
-        host: str,
-        port: int,
-        process_id: int | None,
-        process_name: str | None,
-        connect_timeout_seconds: float,
-    ) -> DebugSession:
-        record = self._repository.get(analysis_id)
-        if record is None:
-            raise DynamicAnalysisNotFound(analysis_id)
-
-        preferred_image_base = int(record.raw["artifacts"].image_base)
-
-        session = DebugSession(
-            session_id=uuid.uuid4().hex,
-            analysis_id=analysis_id,
-            bridge=self._bridge_factory(),
-            preferred_image_base=preferred_image_base,
-            clock=self._clock,
-        )
-
-        # The real connect+attach happens outside this store's own lock -
-        # it can block for a while (network + dbgeng), and callers (api.py)
-        # already run this whole method via run_in_threadpool so it never
-        # blocks the event loop either.
-        session.connect_and_attach(
-            host, port, process_id, process_name, connect_timeout_seconds
-        )
-        self._register(session)
-        return session
-
     def create_local(
         self,
         analysis_id: str,
         command_line: str,
-        connect_timeout_seconds: float,  # noqa: ARG002 - kept for signature symmetry with create(); DebugSession.launch_local doesn't take a timeout today (the underlying local dbgeng call has no timeout parameter), reserved for when that's added.
+        connect_timeout_seconds: float,  # noqa: ARG002 - the underlying local-launch call has no timeout parameter today; reserved for when that's added.
     ) -> DebugSession:
-        """Local-launch path: the app itself executes `command_line` on this
-        host, directly - see `DebugBridge.create_and_attach_local`'s
-        docstring for the full rationale. Kept as a separate method from
-        `create()` rather than a branch inside it, deliberately, so the two
-        code paths (remote client-only vs. local-execute) stay visually and
-        structurally distinct in this security-relevant file.
-        """
+        """Local-launch: the app itself executes `command_line` directly on
+        this host - see `DebugBridge.create_and_attach_local`'s docstring
+        for the full rationale. This store's only session-creation path
+        (the remote "Connect to dbgsrv" path that used to live alongside
+        this as `create()` was removed - see `bridge_factory`'s docstring)."""
         record = self._repository.get(analysis_id)
         if record is None:
             raise DynamicAnalysisNotFound(analysis_id)

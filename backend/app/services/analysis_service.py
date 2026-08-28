@@ -37,7 +37,11 @@ from app.models.analysis import (
 )
 from app.models.graph import Graph
 from app.repositories.base import AnalysisRepository
-from app.services.export_service import build_markdown_export
+from app.services.export_service import (
+    build_full_markdown_export,
+    build_function_markdown_export,
+    build_markdown_export,
+)
 from app.services.file_service import received_upload
 from app.utils.address import format_address, function_node_id, try_parse_address
 
@@ -90,6 +94,11 @@ def _to_detail(function: AnalyzedFunction, entry_point: int) -> FunctionDetail:
         pseudocode=function.pseudocode,
         pseudocode_status=function.pseudocode_status,
         pseudocode_note=function.pseudocode_note,
+        pseudocode_address_lines=(
+            {format_address(addr): line for addr, line in function.pseudocode_address_lines.items()}
+            if function.pseudocode_address_lines
+            else None
+        ),
     )
 
 
@@ -149,6 +158,7 @@ def _build_record(
             entry_point=format_address(entry_point),
             format=artifacts.binary_format,
             bits=artifacts.bits,
+            image_base=format_address(artifacts.image_base),
         ),
         summary=summary,
         call_graph=build_call_graph(
@@ -327,6 +337,88 @@ class AnalysisService:
         record.functions[format_address(parsed)] = detail
         return detail
 
+    def decompile_all_functions(self, analysis_id: str) -> dict[str, int]:
+        """Decompile every function that still lacks pseudocode, one at a
+        time, best-effort - a function the decompiler chokes on is skipped
+        (never raises, see `decompile_one_function`) and the rest still run.
+
+        Deliberately has **no** count/time budget unlike the eager pass at
+        analysis time (`MAX_DECOMPILE_FUNCTIONS`/`DECOMPILE_TIME_BUDGET_SECONDS`
+        in `angr_analyzer.py`) - this exists specifically for "decompile
+        everything", so a caller invoking it has already accepted that a
+        binary with many non-trivial functions can take minutes. Also
+        deliberately does **not** run functions off-thread with a per-function
+        timeout: angr's `Decompiler` is not safe to call concurrently against
+        the same shared `live_project`/`live_cfg_model`, so there is no way to
+        "give up and move on" without risking two decompile calls touching
+        that shared state at once - a stuck function stays stuck for the
+        whole call, same tradeoff the rest of this module already accepts for
+        the initial CFGFast pass (see README's "Timeout không thực sự hủy
+        angr" limitation).
+
+        Skips functions already marked `not_applicable` (import thunks,
+        simprocedures, syscalls, or anything with zero blocks - the eager
+        pass already determined there is nothing to decompile) since nothing
+        would change by retrying those.
+        """
+        record = self._require(analysis_id)
+        artifacts = self._artifacts(record)
+
+        total = len(artifacts.functions)
+        already_available = 0
+        decompiled = 0
+        failed = 0
+        skipped_not_applicable = 0
+
+        for function in artifacts.functions.values():
+            if function.pseudocode_status == "available":
+                already_available += 1
+                continue
+            if function.pseudocode_status == "not_applicable":
+                skipped_not_applicable += 1
+                continue
+
+            if artifacts.live_project is None or artifacts.live_cfg_model is None:
+                # Should not happen in normal operation - only if a future
+                # change strips the live project from a cached analysis.
+                function.pseudocode_status = "failed"
+                function.pseudocode_note = (
+                    "Không thể decompile: dữ liệu phân tích gốc không còn khả dụng."
+                )
+            else:
+                decompile_one_function(artifacts.live_project, artifacts.live_cfg_model, function)
+
+            if function.pseudocode_status == "available":
+                decompiled += 1
+            else:
+                failed += 1
+
+            # Refresh the cached `FunctionDetail` immediately so a reader
+            # (single-function GET, CFG view, or the export built right after
+            # this call returns) sees the freshly computed pseudocode without
+            # needing a separate re-decompile.
+            record.functions[format_address(function.address)] = _to_detail(
+                function, artifacts.entry_point
+            )
+
+        logger.info(
+            "Decompile-all analysis %s: %d/%d function(s) đã có sẵn, %d decompile mới, "
+            "%d thất bại, %d bỏ qua (không áp dụng được)",
+            analysis_id,
+            already_available,
+            total,
+            decompiled,
+            failed,
+            skipped_not_applicable,
+        )
+        return {
+            "total": total,
+            "alreadyAvailable": already_available,
+            "decompiled": decompiled,
+            "failed": failed,
+            "skippedNotApplicable": skipped_not_applicable,
+        }
+
     def get_function_cfg(self, analysis_id: str, address: str) -> Graph | None:
         """Build (and cache) the CFG for one function.
 
@@ -384,6 +476,32 @@ class AnalysisService:
         colleague - see `export_service` for the format's design rationale."""
         record = self._require(analysis_id)
         return build_markdown_export(record)
+
+    def export_markdown_full(self, analysis_id: str) -> str:
+        """Same report, but the Function Detail section covers every function
+        that currently has pseudocode - not a risk-curated top-25. Does not
+        itself decompile anything; call `decompile_all_functions` first if the
+        goal is "every function that *can* be decompiled, is" before export -
+        see `export_service.build_full_markdown_export`'s docstring."""
+        record = self._require(analysis_id)
+        return build_full_markdown_export(record)
+
+    def export_function_markdown(self, analysis_id: str, address: str) -> str | None:
+        """Compact Markdown for exactly one function - full disassembly and
+        pseudocode (if available), not risk-filtered like the whole-analysis
+        exports. `None` if the function doesn't exist (mirrors
+        `get_function`/`decompile_function`'s not-found convention). Does not
+        decompile anything itself - a function without pseudocode yet just
+        reports why, same as the other export variants."""
+        record = self._require(analysis_id)
+        parsed = try_parse_address(address)
+        if parsed is None:
+            return None
+        detail = record.functions.get(format_address(parsed))
+        if detail is None:
+            return None
+        cfg = self.get_function_cfg(analysis_id, address)
+        return build_function_markdown_export(record, detail, cfg)
 
     def expand(self, analysis_id: str, address: str, max_nodes: int = 60) -> Graph | None:
         record = self._require(analysis_id)

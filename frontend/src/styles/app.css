@@ -247,6 +247,7 @@
    flex slot as GraphViewer without the parent needing to know which of the
    two is currently mounted. */
 .assembly-view-wrap {
+  position: relative; /* anchors .assembly-goto-overlay (Ctrl+G) */
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -281,9 +282,18 @@
 }
 
 /* Full listing fills the scroll container itself, not a fixed max-height
-   box like the details-panel preview (.disasm-full) - the whole point here
-   is maximum vertical room. */
-.assembly-listing {
+   box like the details-panel preview (.disasm-split) - the whole point here
+   is maximum vertical room.
+   `.disasm.assembly-listing` (both classes), not just `.assembly-listing` -
+   this element carries both `disasm` and `assembly-listing` in its
+   className, and plain `.disasm` (below, `max-height: 340px`) has equal
+   specificity to a bare `.assembly-listing` selector, so source order alone
+   decided the winner (confirmed live: `.disasm` sits later in this file and
+   won, silently capping the whole assembly view at 340px tall no matter how
+   much content there was - the empty space below it was that clipped
+   height, not "nothing left to show"). Two classes beats one regardless of
+   order. */
+.disasm.assembly-listing {
   max-height: none;
   border: none;
   background: none;
@@ -300,11 +310,95 @@
   align-items: center;
   border-radius: 3px;
   padding: 1px 2px;
+  cursor: pointer; /* double-click toggles a breakpoint at this row */
+}
+
+.disasm-row.assembly-row:hover {
+  background: color-mix(in srgb, var(--border-strong) 10%, transparent);
 }
 
 .assembly-row-current {
   background: color-mix(in srgb, var(--node-executing) 18%, transparent);
   outline: 1px solid var(--node-executing);
+}
+
+/* Ctrl+G "go to address" landing spot - a brief flash so the eye finds it
+   immediately in a long listing, then fades on its own (no JS needed for
+   the fade itself; AssemblyView clears the class via a timeout so it can
+   flash again on a repeat jump to the same row). */
+.assembly-row-jumped {
+  animation: assembly-row-jumped-flash 1.5s ease-out;
+}
+
+@keyframes assembly-row-jumped-flash {
+  0%,
+  30% {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    outline: 1px solid var(--accent);
+  }
+  100% {
+    background: transparent;
+    outline: 1px solid transparent;
+  }
+}
+
+/* Disassembly <-> Pseudocode sync in the function details panel (NodeDetails
+   FunctionView, two always-visible boxes, never a toggle) - a row/line with
+   a known counterpart in the other box gets a faint left rail so the eye can
+   tell which lines are hoverable before hovering. `.sync-hover` is applied
+   by React directly in step with mouseenter/mouseleave on the *other* box's
+   row/line (a bare CSS `:hover` cannot reach across to a different element),
+   so it appears and disappears instantly with the cursor - no animation,
+   unlike Ctrl+G's one-shot `.assembly-row-jumped` flash in the debug
+   assembly view, which fades on its own after a deliberate jump. */
+.disasm-row.sync-available,
+.pseudo-line.sync-available {
+  border-left: 2px solid var(--accent);
+  padding-left: 4px;
+  margin-left: -6px;
+}
+
+.disasm-row.sync-available:hover,
+.pseudo-line.sync-available:hover {
+  background: color-mix(in srgb, var(--border-strong) 10%, transparent);
+}
+
+.pseudo-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sync-hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px solid var(--accent);
+}
+
+/* Floating "go to address" input (Ctrl+G) - anchored to the top-right of
+   the assembly view, above the listing, so it never shifts row positions
+   underneath it. */
+.assembly-goto-overlay {
+  position: absolute;
+  top: 40px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+
+.assembly-goto-overlay input {
+  width: 140px;
+}
+
+.assembly-goto-error {
+  font-size: 11.5px;
+  color: var(--risk-high);
+  white-space: nowrap;
 }
 
 .assembly-bp-toggle {
@@ -521,10 +615,12 @@
   color: var(--accent);
 }
 
-/* Whole-function disassembly preview in the function details panel: several
-   blocks stacked, so it gets more room than a single-block view. */
-.disasm-full {
-  max-height: 480px;
+/* Disassembly and Pseudocode in the function details panel: two separate,
+   always-visible boxes stacked on top of each other (not a toggle), so each
+   gets less height than the old single-box .disasm-full did - otherwise the
+   pair together would dwarf the rest of the panel. */
+.disasm-split {
+  max-height: 260px;
 }
 
 .disasm-block-header {
@@ -543,18 +639,13 @@
   margin-top: 0;
 }
 
-/* Disassembly / Pseudocode toggle above the code box. */
+/* Header above each of the two always-visible code boxes (Disassembly,
+   Pseudocode) in the function details panel. */
 .code-view-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.segmented.small button {
-  padding: 2px 8px;
-  font-size: 11px;
 }
 
 /* Pseudocode is prose-like C, not the fixed-column disassembly grid - wrap
@@ -885,6 +976,14 @@
   color: var(--risk-high);
 }
 
+/* Terminal state (the debuggee itself ended), not an error in this app -
+   deliberately not styled like `.debug-status-error`'s alarming red, just
+   dimmed to read as "nothing more will happen here". */
+.debug-status-badge.debug-status-exited {
+  border-color: var(--text-faint);
+  color: var(--text-faint);
+}
+
 .memory-dump-listing {
   max-height: 320px;
 }
@@ -968,6 +1067,80 @@
   gap: 3px;
   border-color: var(--node-executing);
   color: var(--node-executing);
+}
+
+/* Not yet physically planted (most commonly: its module hasn't loaded yet) -
+   dimmer/dashed so it reads as "waiting", not "broken" - it keeps retrying
+   automatically on every Continue/Step, no action needed from the user. */
+.breakpoint-pending {
+  border-color: var(--text-faint);
+  color: var(--text-faint);
+  border-style: dashed;
+}
+
+/* Module list (DebugPanel) - two columns (base address, name/path) instead
+   of `.disasm-row`'s default three (address/mnemonic/operands) - a module
+   row has no mnemonic column, and the path needs the room a fixed 62px
+   column would cut short. Compound selector (not just `.module-row`) so
+   this reliably beats `.disasm-row`'s own `grid-template-columns`
+   regardless of source order - same equal-specificity trap `.assembly-row`
+   already hit once (see that rule's own comment). */
+.disasm-row.module-row {
+  grid-template-columns: 150px 1fr;
+}
+
+.module-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Right-click "Copy ..." menu (CopyContextMenu.tsx) ---------- */
+
+.copy-menu {
+  position: fixed;
+  z-index: 200; /* above the debug modal's 100, since a copy menu can be
+                   opened from a value shown inside that modal too */
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.3);
+}
+
+.copy-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 12.5px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.copy-menu button:hover {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.copy-menu-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 200;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.3);
+  pointer-events: none;
 }
 
 .chip-remove {

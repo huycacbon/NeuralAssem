@@ -1,5 +1,5 @@
 /**
- * Owns one debug session's client-side state: connect/breakpoint/step/
+ * Owns one debug session's client-side state: local-launch/breakpoint/step/
  * continue/disconnect, wrapping `services/debugApi`. Mirrors the rest of the
  * app's convention (plain `useState`, no context/store) - state lives here,
  * rendering lives in `DebugPanel`/`DebugConnectModal`, wiring lives in
@@ -16,25 +16,17 @@ export interface UseDebugSessionResult {
   session: DebugSessionState | null;
   loading: boolean;
   error: string | null;
-  /** Returns the connected session's state on success, or `null` on
-   *  failure (the error is also captured in `.error` either way) - callers
-   *  that need to know whether to e.g. close a connect modal check this
-   *  return value rather than reading `.session` right after awaiting,
-   *  which can still reflect the pre-update render's stale closure. */
-  connect: (
-    analysisId: string,
-    host: string,
-    port: number,
-    processId?: number | null,
-    processName?: string | null,
-  ) => Promise<DebugSessionState | null>;
   /** Local-launch: the app itself executes `commandLine` on this machine -
-   *  see `debugApi.launchLocal`'s docstring for the full rationale. Same
-   *  success/failure return convention as `connect`. */
+   *  see `debugApi.launchLocal`'s docstring for the full rationale. Returns
+   *  the attached session's state on success, or `null` on failure (the
+   *  error is also captured in `.error` either way) - callers that need to
+   *  know whether to e.g. close the connect modal check this return value
+   *  rather than reading `.session` right after awaiting, which can still
+   *  reflect the pre-update render's stale closure. */
   launchLocal: (analysisId: string, commandLine: string) => Promise<DebugSessionState | null>;
   /** Local-launch from the exact file still held in memory from the
    *  original upload - see `debugApi.launchLocalFromUpload`'s docstring.
-   *  Same success/failure return convention as `connect`. */
+   *  Same success/failure return convention as `launchLocal`. */
   launchLocalFromUpload: (analysisId: string, file: File) => Promise<DebugSessionState | null>;
   /** Write a register, then use the returned (already up to date) session
    *  state directly - unlike `setBreakpoint`/`removeBreakpoint`, the write
@@ -42,6 +34,10 @@ export interface UseDebugSessionResult {
    *  round trip is needed here. */
   setRegister: (name: string, value: string) => Promise<void>;
   setBreakpoint: (staticAddress: string) => Promise<void>;
+  /** For an address outside the sample's own module (e.g. an ntdll row from
+   *  the live-disassembly fallback) - see `debugApi.setRuntimeBreakpoint`'s
+   *  docstring for why this must not go through `setBreakpoint`. */
+  setRuntimeBreakpoint: (runtimeAddress: string) => Promise<void>;
   removeBreakpoint: (breakpointId: number) => Promise<void>;
   step: (mode: StepMode) => Promise<void>;
   continueExecution: () => Promise<void>;
@@ -69,30 +65,6 @@ export function useDebugSession(): UseDebugSessionResult {
       setError('Lỗi không xác định trong phiên debug.');
     }
   }, []);
-
-  const connect = useCallback(
-    async (
-      analysisId: string,
-      host: string,
-      port: number,
-      processId: number | null = null,
-      processName: string | null = null,
-    ) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const state = await debugApi.connect(analysisId, host, port, processId, processName);
-        setSession(state);
-        return state;
-      } catch (err) {
-        handleError(err);
-        return null;
-      } finally {
-        setLoading(false);
-      }
-    },
-    [handleError],
-  );
 
   const launchLocal = useCallback(
     async (analysisId: string, commandLine: string) => {
@@ -151,6 +123,22 @@ export function useDebugSession(): UseDebugSessionResult {
       setLoading(true);
       try {
         await debugApi.setBreakpoint(session.sessionId, staticAddress);
+        setSession(await debugApi.getState(session.sessionId));
+      } catch (err) {
+        handleError(err);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [session, handleError],
+  );
+
+  const setRuntimeBreakpoint = useCallback(
+    async (runtimeAddress: string) => {
+      if (!session) return;
+      setLoading(true);
+      try {
+        await debugApi.setRuntimeBreakpoint(session.sessionId, runtimeAddress);
         setSession(await debugApi.getState(session.sessionId));
       } catch (err) {
         handleError(err);
@@ -225,11 +213,11 @@ export function useDebugSession(): UseDebugSessionResult {
     session,
     loading,
     error,
-    connect,
     launchLocal,
     launchLocalFromUpload,
     setRegister,
     setBreakpoint,
+    setRuntimeBreakpoint,
     removeBreakpoint,
     step,
     continueExecution,

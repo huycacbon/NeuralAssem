@@ -93,6 +93,11 @@ class TestAnalysisReads:
         assert payload["analysisId"] == "test-analysis"
         assert payload["file"]["name"] == "fixture.exe"
         assert payload["file"]["entryPoint"] == "0x401000"
+        # `imageBase` - what a user needs to compute a `module+RVA` expression
+        # for x64dbg/WinDbg's own "go to", since a static address alone isn't
+        # portable to a separately-launched (ASLR-randomised) debugger - see
+        # `FileInfo.image_base`'s docstring.
+        assert payload["file"]["imageBase"] == "0x400000"
         assert payload["summary"]["functionCount"] == 5
         assert set(payload["callGraph"]) == {"nodes", "edges", "metadata"}
 
@@ -193,6 +198,31 @@ class TestAnalysisReads:
 
     def test_export_markdown_unknown_analysis(self, client: TestClient) -> None:
         response = client.get("/api/analysis/does-not-exist/export.md")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "ANALYSIS_NOT_FOUND"
+
+    def test_export_function_markdown_endpoint(
+        self, client: TestClient, stored_analysis: AnalysisRecord
+    ) -> None:
+        response = client.get("/api/analysis/test-analysis/functions/0x401300/export.md")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/markdown")
+        assert "attachment" in response.headers["content-disposition"]
+        assert "# Function: multiply" in response.text
+        assert "0x401300" in response.text
+        # Only this one function's write-up, not the whole binary's - a
+        # sibling function's name should not leak in.
+        assert "calculate" not in response.text
+
+    def test_export_function_markdown_unknown_function(
+        self, client: TestClient, stored_analysis: AnalysisRecord
+    ) -> None:
+        response = client.get("/api/analysis/test-analysis/functions/0x999999/export.md")
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "FUNCTION_NOT_FOUND"
+
+    def test_export_function_markdown_unknown_analysis(self, client: TestClient) -> None:
+        response = client.get("/api/analysis/does-not-exist/functions/0x401300/export.md")
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "ANALYSIS_NOT_FOUND"
 

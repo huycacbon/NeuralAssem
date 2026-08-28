@@ -2,15 +2,49 @@
 
 [🇻🇳 Tiếng Việt (primary document)](README.md) · 🇬🇧 English · [Security policy](SECURITY.md)
 
-A **static analysis** tool for PE files (`.exe` / `.dll`) that runs entirely locally, rendering
-disassembly results as an interactive, neural-network-style graph.
+A **static + dynamic analysis** tool for PE files (`.exe` / `.dll`) that runs entirely locally,
+turning disassembly into an interactive, neural-network-style graph — and into a compact
+Markdown report **built to be pasted straight into ChatGPT/Claude**, instead of forcing you to
+hand-copy thousands of lines of disassembly.
+
+### 🤖 Why this pairs well with AI-assisted PE analysis
+
+Handing an AI the raw `.exe` doesn't work — it can't execute a binary, and it can't disassemble
+one either. Pasting a raw angr/IDA/Ghidra dump into a chat doesn't work well either — a
+mid-sized binary can have thousands of functions, blowing past any context window instantly, and
+the AI ends up guessing which unordered blob of JSON matters.
+
+This tool sits in between:
+
+```mermaid
+flowchart LR
+    A["Upload .exe/.dll"] --> B["angr CFGFast<br/>disassemble + risk score"]
+    B --> C["Export Markdown button<br/>compact · risk-ranked · hard caps"]
+    C --> D["Paste into ChatGPT / Claude / ..."]
+    D --> E["Ask: what does this function do?<br/>is this process injection?<br/>explain this API call chain"]
+```
+
+- **Risk score ranks functions up front** so the AI isn't guessing which of thousands of
+  functions to look at first.
+- **Every table has a hard cap** (risk rows, edges, functions with pseudocode) — nothing gets
+  silently truncated; whatever is cut is reported with an exact count.
+- **The exported report is in English**, even though the rest of the app is Vietnamese — it
+  tokenizes far more efficiently for most models than the raw JSON dump would.
+- **No API key, no AI call happens inside the app.** This isn't a hidden "AI integration" that
+  phones out on your behalf — it only prepares clean data; you paste it into whichever AI tool
+  you choose, yourself. Nothing leaves your machine except the exact text you copy.
+- The full graph/CFG/pseudocode is still browsable directly in the UI — the Markdown export is a
+  shortcut for AI, not a replacement for looking at the data yourself.
+
+Export format details: [section 8](#markdown-export-format).
 
 > **Safety:** this tool **never executes** the sample. Binaries are only ever read as data and
 > disassembled by angr. No sandbox, no emulator, no file/hash sent to the Internet. The backend
 > (`backend/app/`) never uses `subprocess` — a unit test enforces this as a regression guard. The
 > desktop build ([section 13](#13-desktop-build-no-install-required)) is the one exception: it uses
 > `subprocess` in exactly one place, in a launcher *outside* `backend/app/`, and only to start its
-> own bundled Python — it never touches the sample file.
+> own bundled Python — it never touches the sample file. The Debug feature
+> ([section 15](#15-debug-dynamic-analysis)) is a separate, explicit exception — see the note there.
 
 ---
 
@@ -27,7 +61,9 @@ in three views:
 | **API Graph** | Function → Imported API (bipartite, one node per API) |
 
 Besides the graph, the tool extracts: entry point, function list, imported APIs (with DLL),
-strings, and a **heuristic risk score** to help prioritise analysis.
+strings, and a **heuristic risk score** to help prioritise analysis. Need to go deeper than static
+analysis? Open a **real debug session** (breakpoints, stepping, read/edit registers, live
+assembly) — see [section 15](#15-debug-dynamic-analysis).
 
 > The risk score is a heuristic to prioritise analysis, **not a malware detection verdict**.
 
@@ -104,7 +140,7 @@ binary-graph-analyzer/
 │   │   └── utils/
 │   │       ├── address.py             Address normalisation, node ids
 │   │       └── security.py            Validation, hashing, temp files
-│   ├── tests/                         287 tests
+│   ├── tests/                         300 tests
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
@@ -223,19 +259,50 @@ Open <http://127.0.0.1:5173>. API docs at <http://127.0.0.1:8000/docs>.
 4. Left panel: search functions, view the summary, and adjust filters. Click a function to focus
    its node; **double-click** to open its CFG.
 5. Right panel: details for the function / basic block / API of whichever node is selected. For
-   functions, there is a **Disassembly | Pseudocode** toggle — pseudocode is C-like code generated
-   by `angr.analyses.Decompiler` (heuristic, not guaranteed 100% correct), pre-computed only for a
-   priority subset of functions (entry point, named functions, high risk score) since decompiling
-   is far more expensive than disassembly — see "Current limitations". For the rest, click
-   **"Decompile this function"** to generate pseudocode on demand (best-effort, reusing the angr
-   analysis already held in memory — no need to re-analyse from scratch).
-6. **Layout**: *Neural Network* (force-directed, default for the call graph) or *Hierarchical Flow*
+   functions, **Disassembly** and **Pseudocode** render as two separate boxes, always visible side
+   by side (not a toggle) — pseudocode is C-like code generated by `angr.analyses.Decompiler`
+   (heuristic, not guaranteed 100% correct), pre-computed only for a priority subset of functions
+   (entry point, named functions, high risk score) since decompiling is far more expensive than
+   disassembly — see "Current limitations". For the rest, click **"Decompile this function"** to
+   generate pseudocode on demand (best-effort, reusing the angr analysis already held in memory —
+   no need to re-analyse from scratch).
+   **Disassembly <-> Pseudocode sync** (IDA-style): a row/line with a blue left rail has a two-way
+   mapping - **hover it** (no click needed) to instantly highlight the matching spot in the other
+   box, auto-scrolling it into view if it's currently off-screen. Built on angr's decompiler's own
+   internal `map_addr_to_pos`, so not every line has a mapping (variable declarations, bare braces
+   have no machine address).
+6. **Right-click to copy**: register values, addresses (disassembly/pseudocode/function
+   list/debug panel), function names, block labels, instruction lines, pseudocode lines - right-click
+   the value you want, pick the matching item from the menu.
+7. **Layout**: *Neural Network* (force-directed, default for the call graph) or *Hierarchical Flow*
    (default for the CFG).
-7. **Export Markdown**: a toolbar button that downloads a compact `.md` report — file summary, a
+8. **Export Markdown**: a toolbar button that downloads a compact `.md` report — file summary, a
    function table sorted by risk score, imports grouped by capability, the call graph as an
    edge-list, and pseudocode/risk reasons for notable functions. Designed to be pasted straight
    into an AI chat or sent to a colleague without this tool installed; it is not a raw data dump —
    see section 8.
+9. **Export all (decompile everything)**: the button next to it — actively decompiles every
+   function still missing pseudocode (no cap, unlike the bounded automatic pass at analysis time),
+   then downloads a separate `.md` report listing pseudocode for **every** decompiled function, not
+   just the top 25 by risk. Since decompiling one function can take tens of seconds, this can take
+   several minutes on a binary with many functions — the button disables itself and changes its
+   label while running. Useful when you want a complete dump (to read manually, archive, or feed
+   into another tool) rather than a compact report meant for pasting into an AI — see section 8.
+10. **Export Markdown for this function**: a button in the details panel (when a function is
+    selected) — downloads a `.md` report for **exactly one** function, with full disassembly and
+    pseudocode (if available), not risk-filtered since there is only one function anyway. Does not
+    decompile anything itself - a function without pseudocode yet just reports why in the file.
+    Much smaller than `/export.md`, useful when you want to ask an AI about one specific function
+    rather than the whole binary — see section 8.
+11. **"Copy as x64dbg (module+offset)"**: every address shown in the app (Function List, Entry
+    point/Image base in the FILE panel, a function's Address, block headers, disassembly rows) is a
+    **static** address — computed from the PE's default `ImageBase`, unchanged across runs. A
+    separately-launched x64dbg gets a different, randomised base (ASLR) on every launch, so raw
+    absolute addresses aren't directly comparable between this app and x64dbg. Right-click any
+    address and pick this menu item to copy a `module.exe+RVA` expression — paste it straight into
+    x64dbg's "Go to Expression" box (Ctrl+G), which resolves it correctly against that session's
+    actual load base. The FILE panel also shows `Image base` directly for manual math when needed
+    (`RVA = static address − Image base`).
 
 ### Filters
 
@@ -263,12 +330,15 @@ Filters **never delete the underlying data** — they only change what is curren
 | `GET` | `/api/analysis/{id}/functions/{addr}` | One function's details |
 | `GET` | `/api/analysis/{id}/functions/{addr}/cfg` | Function CFG (lazy, with instructions) |
 | `POST` | `/api/analysis/{id}/functions/{addr}/decompile` | On-demand decompile (angr), no-op if already done |
+| `GET` | `/api/analysis/{id}/functions/{addr}/export.md` | Markdown report for one function (see section 7, step 10) |
+| `POST` | `/api/analysis/{id}/decompile-all` | Decompile every remaining function, no cap (can take minutes) |
 | `GET` | `/api/analysis/{id}/call-graph` | Call graph — `depth` (1–5), `maxNodes`, `includeApis` |
 | `GET` | `/api/analysis/{id}/api-graph` | API graph — `maxNodes`, `capability` |
 | `GET` | `/api/analysis/{id}/imports` | Imported APIs with DLL and callers |
 | `GET` | `/api/analysis/{id}/strings` | Strings — `limit`, `search` |
 | `GET` | `/api/analysis/{id}/expand/{addr}` | One-hop neighbourhood of a function |
 | `GET` | `/api/analysis/{id}/export.md` | Compact Markdown report (see section 7, step 7) |
+| `GET` | `/api/analysis/{id}/export-full.md` | Same, but pseudocode for **every** function (see section 7, step 8) |
 | `DELETE` | `/api/analysis/{id}` | Delete a result from memory |
 
 Addresses in URLs accept both `0x401000` and `401000`.
@@ -290,6 +360,14 @@ pasting into an AI chat or sending to someone without this tool, **not** a full 
   tokenises more compactly for most AI models, which is this format's whole point.
 - Hard caps everywhere (risk-table rows, edges, functions with pseudocode) — anything truncated is
   always reported with a count, never silently dropped.
+
+`/export-full.md` shares the same header/risk table/imports/call graph, but its pseudocode section
+lists **every** function that currently has it (no 25-function cap, no risk filter) — a function
+that isn't decompiled (yet, or at all) is listed in a compact table at the end with the reason,
+instead of being dropped. It does not decompile anything itself — call `/decompile-all` first to
+get as much pseudocode as possible. Can produce a much larger file than `/export.md` for a binary
+with many non-trivial functions - that is the intent, not a bug to fix; this variant's goal is
+completeness, not staying small enough for an AI chat.
 
 ### Graph schema
 
@@ -433,10 +511,11 @@ cd backend
 pytest tests -v
 ```
 
-287 tests, covering: extension/size validation, SHA-256, address normalisation, path-traversal
+300 tests, covering: extension/size validation, SHA-256, address normalisation, path-traversal
 protection, risk scoring, call-graph-to-JSON conversion, duplicate-edge removal, depth limiting,
 max-node limiting, decompile-priority ordering, the error envelope, the dynamic analysis module
-(section 15, tested via `FakeDebugBridge`), and one integration test that runs angr for real.
+(section 15, tested via `FakeDebugBridge` as well as a real `Win32DebugBridge` against live
+processes), and one integration test that runs angr for real.
 
 A benign C test fixture lives at
 [`backend/tests/fixtures/sample.c`](backend/tests/fixtures/sample.c). Compile it with MinGW-w64 or
@@ -482,8 +561,18 @@ powershell -ExecutionPolicy Bypass -File build_desktop_app.ps1
 
 The output lands in `dist_desktop\BinaryGraphAnalyzer\` (~600 MB, mostly angr's precompiled
 dependencies — z3-solver, capstone, pyvex). Copy the whole folder to another Windows 10/11 x64
-machine and run `BinaryGraphAnalyzer.exe` — it opens a native window (WebView2, present on any
-modern Windows) showing the same UI as the web app.
+machine and run `BinaryGraphAnalyzer.exe` — it opens a native window (WebView2) showing the same
+UI as the web app.
+
+> **Requires the Microsoft Edge WebView2 Runtime on the target machine.** Most full Windows
+> 10/11 installs already have it, but some minimal machines/VMs (a number of Windows 10 22H2 test
+> images among them) don't. Without it, pywebview *silently* falls back to the legacy MSHTML/IE
+> engine (the log line `MSHTML is deprecated` is that fallback happening) — which cannot run this
+> app at all: Vite emits `<script type="module">`, and MSHTML has never supported ES modules, so
+> the window opens blank/broken. `desktop_launcher.py` checks the registry before opening the
+> window and fails with a clear message and a download link instead of letting MSHTML silently
+> take over. Get the Evergreen Bootstrapper (needs internet to install, ~2 MB) at:
+> https://go.microsoft.com/fwlink/p/?LinkId=2124703
 
 > **No HTTP backend anymore.** An earlier version ran an internal FastAPI/uvicorn server on a
 > random loopback port, with the frontend calling it via `fetch()`. The current version drops that
@@ -532,36 +621,32 @@ limitations): see [`desktop/README.md`](desktop/README.md).
 
 ---
 
-## 15. Debug (dynamic analysis) — two modes: remote (isolated VM) or run directly
+## 15. Debug (dynamic analysis)
 
 Beyond static analysis (sections 1–14, where the sample is **never executed**), there is a
 completely separate module: the **Debug** button on the toolbar opens a **real** debug session
-(breakpoints, stepping, live register/stack reads), in one of two modes the user picks each time:
+(breakpoints, stepping, live/editable registers, live stack reads) by **executing the specified
+file itself, directly on the machine running the app** — no VM, no isolation. By default it runs
+**the exact file you just uploaded** (one click — the app re-sends and keeps its own separate
+copy, since the original was already deleted right after static analysis finished); a path to a
+different file can also be typed in manually.
 
-- **Remote** (recommended for unidentified/suspicious samples): the app only connects to a
-  `dbgsrv.exe` already running elsewhere — typically an **isolated VM the user prepares
-  themselves**, but it can be any `host:port` (including `127.0.0.1` if you run `dbgsrv` on this
-  same machine yourself). The app never automates the VM (no start/stop/snapshot, no copying the
-  sample in) — the user prepares it, runs `dbgsrv` themselves, then just types `host:port` into the
-  app.
-- **Run directly on this machine**: the app **executes the specified file itself**, directly on the
-  machine running the app — no VM, no isolation. By default it runs **the exact file you just
-  uploaded** (one click — the app re-sends and keeps its own separate copy, since the original was
-  already deleted right after static analysis finished); a path to a different file can also be
-  typed in manually. **Only use this for software you fully trust** (e.g. this app itself during
-  development), **never for an unidentified sample**. This is an explicit, documented exception to
-  the "never executes the binary" rule in section 10 — see the note there and the "local-launch"
-  addendum in `docs/dynamic-analysis-spec.md` for the full rationale and limits.
+**Only use this for software you fully trust** (e.g. this app itself during development), **never
+for an unidentified sample** — this is an explicit, documented exception to the "never executes
+the binary" rule in section 10; isolating via a VM is the user's own responsibility, the app does
+not do it automatically. See the note in section 10 and the "local-launch" addendum in
+`docs/dynamic-analysis-spec.md` for the full rationale and limits.
 
-Architecture: `backend/app/dynamic/` talks straight to `dbgeng.dll` via `comtypes`/`ctypes` (not
-`pykd` — its newest PyPI release does not support this project's Python version, see
-`docs/dynamic-analysis-vm-setup.md`). When the debugger stops at a runtime address, the app
-recomputes the corresponding static address (compensating for ASLR/rebase) and highlights the
-matching node on the already-rendered static graph — for both modes.
+Architecture: `backend/app/dynamic/debug_bridge/win32_debug.py` talks straight to the Windows
+Win32 debug API via `ctypes` (`CreateProcess` + `DEBUG_PROCESS`, `WaitForDebugEvent`/
+`ContinueDebugEvent`, self-managed software `INT3` breakpoints) — the same technique x64dbg/
+OllyDbg use, no dependency on `dbgeng.dll`/`pykd`. Every call is pinned to one dedicated
+background thread (`ThreadPinnedDebugBridge`), since the Win32 debug API is thread-affine. When
+the debugger stops at a runtime address, the app recomputes the corresponding static address
+(compensating for ASLR/rebase) and highlights the matching node on the already-rendered static
+graph.
 
-See the full VM + `dbgsrv` setup guide at
-[`docs/dynamic-analysis-vm-setup.md`](docs/dynamic-analysis-vm-setup.md), and the complete spec/
-safety constraints at [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
+Full spec/safety constraints: [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-spec.md).
 
 **Current capabilities:**
 
@@ -569,28 +654,46 @@ safety constraints at [`docs/dynamic-analysis-spec.md`](docs/dynamic-analysis-sp
   linear assembly listing of the currently-running function, auto-highlighting and auto-scrolling
   to the executing line on every step. If the PC is in a system module (outside the static
   analyzer's coverage, e.g. `ntdll`/`kernel32`), it disassembles live from the running process
-  instead of using static data.
+  instead of using static data — breakpoints work in both cases (a static address inside the
+  analysed module, or a runtime address outside it).
+- **Ctrl+G "go to address"** (x64dbg-style) in Assembly View, three tiers: (1) a row already on
+  screen; (2) not shown yet but a static function contains that address - fetches its CFG and
+  switches the view to it; (3) no static function covers it either, but a debug session is open -
+  live-disassembles directly at that address if it falls inside any *currently loaded* module
+  (including a system one like `ntdll`, and it doesn't need to be where the PC currently is)
+  before finally giving up with an error.
+- **Modules** (x64dbg-style): every module currently mapped in the debuggee - the main EXE and
+  each DLL loaded, including ones loaded well after attach - base address + file path, refreshed
+  after every step/continue.
 - **Registers & flags**: read and **edit** register values (x86 and x64) and individual EFLAGS bits
   (CF/ZF/SF/OF/PF/AF/TF/IF/DF) — after editing, the next Step Into/Step Over uses the edited value
-  immediately. This is the first piece of phase 2 (patch-and-continue).
+  immediately.
 - **Memory dump**: view raw bytes at any runtime address (classic address/hex/ASCII layout), not
   limited to the analysed module.
 - **Display address rebasing**: while a debug session is active, every address shown in the UI
   (Function List, graphs, CFG, Assembly View) is automatically offset to match the real runtime
   address (ASLR-compensated) — the underlying data used for API calls/breakpoints still uses the
-  static coordinate space unchanged.
+  static coordinate space unchanged. Markdown export while debugging also shows real runtime
+  addresses, not static ones.
+- **"Pending" breakpoints**: a breakpoint set on an address inside a module that hasn't loaded yet
+  (a DLL to be `LoadLibrary`'d later) is still recorded, shown with a ⏳ mark in the Breakpoints
+  list - automatically (re-)planted on every Continue until that module loads, no extra action
+  needed. When a module unloads (`FreeLibrary`), any breakpoint planted inside its address range
+  is cleaned up automatically so it can't misfire into whatever unrelated module the OS happens to
+  map over that same freed range next.
+- **`exited` status**: when the debuggee terminates on its own (ran to completion, or crashed),
+  status switches to a dedicated `EXITED` state instead of looking like an ordinary breakpoint -
+  Step/Continue disable themselves, with a clear message. (Previously every kind of stop reported
+  `BREAK` the same way, including a dead process - the debugger looked permanently frozen at some
+  address forever, with no error shown anywhere.)
 
-**Not yet available / still limited:** writing arbitrary memory (`write_memory`), setting a
-breakpoint at an address outside the analysed module (dump/disassemble works there, breakpoints do
-not yet), attaching by `processName`. Most of the capabilities above (aside from the original
-attach + initial module enumeration) **have not been live-tested against a real target** — see the
-detailed notes in each section's docstring in
-`backend/app/dynamic/debug_bridge/client.py`.
+**Not yet available / still limited:** writing arbitrary memory (`write_memory` exists at the
+bridge layer but has no API/UI yet), attaching by `processName` instead of always launching fresh,
+stepping across more than one thread at once (only the current thread is followed), pending
+breakpoints only re-arm on Continue (not yet on Step Into/Step Over).
 
-Section 10's safety notes above apply unchanged to the static analyzer and to remote mode; the
-"run directly" mode is the explicit, documented exception noted there. A mandatory warning modal
-shows before any debug session opens (shared, once per page session) — and a **separate warning
-that shows every time**, more severe, before selecting "run directly" mode.
+A mandatory warning modal shows before any debug session opens (once per page session), making
+clear this is real execution on the current machine, not a sandbox.
 
 ---
 

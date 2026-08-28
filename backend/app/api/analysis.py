@@ -174,6 +174,25 @@ def decompile_function(
     return detail
 
 
+@router.post("/{analysis_id}/decompile-all")
+def decompile_all_functions(analysis_id: str, service: ServiceDep) -> dict[str, int]:
+    """Decompile every function that still lacks pseudocode, best-effort.
+
+    No count/time budget unlike the eager pass at analysis time or the
+    30/45s-ish window that pass allows itself - a binary with many
+    non-trivial functions can genuinely take minutes here. See
+    `AnalysisService.decompile_all_functions`'s docstring for the full
+    rationale (including why this can't safely time out mid-function and
+    move on). Meant to be called right before `export-full.md` so that
+    export's Function Detail section covers as much of the binary as
+    possible.
+    """
+    try:
+        return service.decompile_all_functions(analysis_id)
+    except AnalysisNotFound as exc:
+        raise _not_found(analysis_id) from exc
+
+
 @router.get("/{analysis_id}/functions/{function_address}/cfg", response_model=Graph)
 def get_function_cfg(
     analysis_id: str,
@@ -194,6 +213,36 @@ def get_function_cfg(
             f"address={function_address}",
         )
     return graph
+
+
+@router.get("/{analysis_id}/functions/{function_address}/export.md")
+def export_function_markdown(
+    analysis_id: str, function_address: str, service: ServiceDep
+) -> Response:
+    """Compact Markdown for exactly one function - full disassembly and
+    pseudocode (if available), not risk-filtered like `/export.md` or
+    `/export-full.md`. Does not decompile anything itself - see
+    `app.services.export_service.build_function_markdown_export`.
+    """
+    try:
+        markdown = service.export_function_markdown(analysis_id, function_address)
+    except AnalysisNotFound as exc:
+        raise _not_found(analysis_id) from exc
+
+    if markdown is None:
+        raise _error(
+            404,
+            "FUNCTION_NOT_FOUND",
+            "Không tìm thấy function tại địa chỉ này",
+            f"address={function_address}",
+        )
+
+    filename = f"function-{function_address.replace('0x', '')}.md"
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{analysis_id}/call-graph", response_model=Graph)
@@ -254,6 +303,30 @@ def export_markdown(analysis_id: str, service: ServiceDep) -> Response:
         raise _not_found(analysis_id) from exc
 
     filename = f"analysis-{analysis_id[:8]}.md"
+    return Response(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{analysis_id}/export-full.md")
+def export_markdown_full(analysis_id: str, service: ServiceDep) -> Response:
+    """Same report as `/export.md`, except the Function Detail section covers
+    every function that currently has pseudocode, not a risk-curated top-25 -
+    the "export everything" counterpart. Does not decompile anything itself;
+    call `POST .../decompile-all` first to fill in as much pseudocode as
+    possible before exporting. Can be a genuinely large file for a binary
+    with hundreds of non-trivial functions - see `export_service` for the
+    rationale (this is deliberately not the token-efficient default meant
+    for pasting into an LLM chat - that one is `/export.md`).
+    """
+    try:
+        markdown = service.export_markdown_full(analysis_id)
+    except AnalysisNotFound as exc:
+        raise _not_found(analysis_id) from exc
+
+    filename = f"analysis-{analysis_id[:8]}-full.md"
     return Response(
         content=markdown,
         media_type="text/markdown; charset=utf-8",

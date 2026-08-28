@@ -18,6 +18,17 @@ class FileInfo(CamelModel):
     entry_point: str
     format: str = "PE"
     bits: int = 32
+    #: The PE's own preferred `ImageBase` (Optional Header) - every "static"
+    #: address shown elsewhere in the app (function list, graphs, CFG,
+    #: `entryPoint` above) is already expressed in this coordinate space, so
+    #: this is what a user needs to compute a `module+RVA` expression
+    #: (`address - imageBase`) for pasting into x64dbg/WinDbg's own "go to"
+    #: box - those tools resolve `module+RVA` against *their own* attach's
+    #: real (ASLR-randomised, and therefore almost never numerically equal
+    #: to this app's own debug session) load base, so the raw static address
+    #: alone is not portable between two independently-launched debuggers,
+    #: only the RVA is.
+    image_base: str = "0x0"
 
 
 class ImportedApi(CamelModel):
@@ -67,6 +78,12 @@ class FunctionDetail(FunctionSummary):
     pseudocode: str | None = None
     pseudocode_status: str = "not_attempted"
     pseudocode_note: str | None = None
+    #: Instruction address (hex string, e.g. "0x401000") -> 1-indexed line
+    #: number in `pseudocode` - lets the UI sync a disassembly row with the
+    #: pseudocode line it decompiled into (IDA/x64dbg-style). `None` when
+    #: pseudocode isn't available, or when it is but the map itself could not
+    #: be built (best-effort on top of an already best-effort decompile).
+    pseudocode_address_lines: dict[str, int] | None = None
 
 
 class FunctionListResponse(CamelModel):

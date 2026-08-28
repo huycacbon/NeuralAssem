@@ -4,8 +4,10 @@
  * Filters change what is *displayed*; the loaded graph data is never mutated.
  */
 
+import { useCopyMenu } from '@/components/CopyContextMenu';
 import type { AnalysisResponse, GraphNode, GraphType } from '@/types/graph';
 import type { GraphFilters } from '@/hooks/useGraphFilters';
+import { toX64dbgExpression } from '@/utils/x64dbgExpression';
 
 interface AnalysisSummaryProps {
   analysis: AnalysisResponse | null;
@@ -44,6 +46,8 @@ export function AnalysisSummary({
   onDepthChange,
   onMaxNodesChange,
 }: AnalysisSummaryProps): JSX.Element | null {
+  const { openCopyMenu } = useCopyMenu();
+
   if (!analysis) return null;
 
   const { file, summary } = analysis;
@@ -63,10 +67,35 @@ export function AnalysisSummary({
             {file.architecture} ({file.bits}-bit)
           </dd>
           <dt>Entry point</dt>
-          <dd>{file.entryPoint}</dd>
+          <dd
+            onContextMenu={(event) => {
+              const items = [{ label: 'entry point', value: file.entryPoint }];
+              const x64dbgExpr = toX64dbgExpression(file.entryPoint, file.imageBase, file.name);
+              if (x64dbgExpr) items.push({ label: 'dạng x64dbg (module+offset)', value: x64dbgExpr });
+              openCopyMenu(event, items);
+            }}
+          >
+            {file.entryPoint}
+          </dd>
+          <dt>Image base</dt>
+          <dd
+            title="Base mặc định (preferred ImageBase) trong PE header - mọi địa chỉ 'static' trong app đều tính theo base này, không đổi giữa các lần chạy (khác với ASLR runtime base). Trừ địa chỉ static cho giá trị này để ra offset dùng được với x64dbg (module+offset)."
+            onContextMenu={(event) =>
+              openCopyMenu(event, [{ label: 'image base', value: file.imageBase }])
+            }
+          >
+            {file.imageBase}
+          </dd>
           <dt>SHA-256</dt>
           <dd style={{ fontSize: 10.5 }}>{file.sha256}</dd>
         </dl>
+        <p className="disclaimer" style={{ marginTop: 6 }}>
+          Địa chỉ hiển thị trong app (Function List, đồ thị, CFG) là <strong>static</strong>, tính
+          theo Image base ở trên — không đổi giữa các lần chạy. x64dbg (chạy độc lập) sẽ có base
+          ngẫu nhiên khác (ASLR) mỗi lần launch, nên đừng so trực tiếp địa chỉ tuyệt đối. Chuột phải
+          vào một địa chỉ để copy dạng <code>module+offset</code> — dán thẳng vào ô "Go to
+          Expression" (Ctrl+G) của x64dbg.
+        </p>
       </div>
 
       <div className="panel-section">
